@@ -1,0 +1,36 @@
+import json
+
+import numpy as np
+import zarr
+from zarr.core.buffer import default_buffer_prototype
+
+from tests.conftest import make_tiff, stack_u16
+from zarrbridge.readers.refkv_reader import RefkvReader
+from zarrbridge.store.transcode import TranscodeStore
+
+proto = default_buffer_prototype()
+
+
+async def test_transcode_lzw_ome_tiff(tmp_path, cfg):
+    a = stack_u16()
+    op = RefkvReader().open(make_tiff(tmp_path / "a.ome.tif", a, ome=True, metadata={"axes": "ZYX"},
+                                      compression="lzw", rowsperstrip=32), cfg)
+    ts = TranscodeStore(op.store)
+    meta = json.loads((await ts.get("0/zarr.json", proto)).to_bytes())
+    assert [c["name"] for c in meta["codecs"]] == ["bytes", "zstd"]
+    import zstandard
+    chunk = zstandard.decompress((await ts.get("0/c/4/3/0", proto)).to_bytes())
+    assert len(chunk) == 32 * 120 * 2 and ts.is_transcoded("0/c/0/0/0") and ts.transcoded_arrays == {"0"}
+    assert (await ts.get("0/c/9/0/0", proto)) is None
+
+    raw = RefkvReader().open(make_tiff(tmp_path / "r.ome.tif", a, ome=True, metadata={"axes": "ZYX"}, tile=(32, 32)), cfg)
+    ts2 = TranscodeStore(raw.store)
+    assert (await ts2.get("0/c/0/0/0", proto)).to_bytes() == (await raw.store.get("0/c/0/0/0", proto)).to_bytes()
+    assert not ts2.is_transcoded("0/c/0/0/0")
+
+
+def test_transcode_zarr_roundtrip(tmp_path, cfg):
+    a = stack_u16()
+    op = RefkvReader().open(make_tiff(tmp_path / "a.ome.tif", a, ome=True, metadata={"axes": "ZYX"},
+                                      compression="lzw", rowsperstrip=32), cfg)
+    assert np.array_equal(zarr.open_group(TranscodeStore(op.store), mode="r")["0"][:], a)
