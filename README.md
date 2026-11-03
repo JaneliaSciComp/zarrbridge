@@ -45,6 +45,15 @@ ds.ensure_pyramid("now")                        # run the builder in-process (CL
 app = zarrbridge.create_app(zarrbridge.Config.load("zarrbridge.toml"))
 ```
 
+## Demo
+
+`pixi run demo` downloads public sample files in every supported format (EMDB maps, ImageJ hyperstacks,
+OME-TIFF with sub-resolutions, Aperio/Hamamatsu/Akoya slides, CZI, ND2, LIF, IMS, DICOM, NIfTI, NRRD, FITS and
+two files from `s3.janelia.org`) once into `$ZB_DEMO_DIR` (default `/scratch/$USER/zarrbridge-demo`), then serves
+them on `0.0.0.0` at a random port with an index page of Neuroglancer and vizarr links. It uses
+`/opt/certs/cert.{crt,key}` for HTTPS when present (`--ssl-certfile/--ssl-keyfile` or `ZB_SSL_*` otherwise);
+hosted viewers are HTTPS pages and cannot fetch from a plain-HTTP server. The manifest is `demo/run.py`.
+
 ## How it works
 
 - **Readers** (`zarrbridge/readers/`): `mrc` (64³ cubes over the uncompressed file, port of mrc-ng-server),

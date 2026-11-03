@@ -161,6 +161,7 @@ td,th{{border-bottom:1px solid #ddd;padding:.5em;vertical-align:top;text-align:l
 <p>Public sample files in every supported format, served live as OME-Zarr 0.5 at <code>{html.escape(base_url)}/{root}/&lt;file&gt;/</code>.
 Nothing was converted: each chunk is read from the original file on request. Multiscale levels are built in the background
 on first open; reload a <em>status</em> link to watch <code>levels.state</code> go <code>native → building → multiscale</code>.
+Links to viewers open the hosted Neuroglancer / vizarr pages pointed at this server.
 <a href="{base_url}/{root}/">Directory listing</a> · <a href="{base_url}/_health">health</a></p>
 <table><tr><th>file</th><th>reader · classification · images</th><th>open</th></tr>{''.join(rows)}</table></body></html>"""
     out = data / "index.html"
@@ -175,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--host-name", default=socket.getfqdn(), help="hostname to put in the printed URL and viewer links")
     ap.add_argument("--fetch-only", action="store_true")
     ap.add_argument("--no-fetch", action="store_true")
+    ap.add_argument("--ssl-certfile", default=os.environ.get("ZB_SSL_CERTFILE", "/opt/certs/cert.crt" if Path("/opt/certs/cert.crt").exists() else ""))
+    ap.add_argument("--ssl-keyfile", default=os.environ.get("ZB_SSL_KEYFILE", "/opt/certs/cert.key" if Path("/opt/certs/cert.key").exists() else ""))
     args = ap.parse_args(argv)
     data = args.dir
     data.mkdir(parents=True, exist_ok=True)
@@ -184,7 +187,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     from zarrbridge.server.config import Config
     port = args.port or free_port()
-    base_url = f"http://{args.host_name}:{port}"
+    ssl = bool(args.ssl_certfile)
+    base_url = f"{'https' if ssl else 'http'}://{args.host_name}:{port}"
     root = data.name
     config = Config.load(env={}, overrides={"roots": {root: str(data)},
                                             "server": {"host": "0.0.0.0", "port": port, "insecure": True, "cors_origins": ["*"]},
@@ -194,7 +198,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nzarrbridge demo: {base_url}/\n", flush=True)
     import uvicorn
     from zarrbridge.server.app import create_app
-    uvicorn.run(create_app(config), host="0.0.0.0", port=port, log_level="warning")
+    kw = {"ssl_certfile": args.ssl_certfile, "ssl_keyfile": args.ssl_keyfile} if ssl else {}
+    if not ssl:
+        print("note: no TLS certificate; https viewers (neuroglancer-demo, vizarr) cannot fetch from an http server", file=sys.stderr)
+    uvicorn.run(create_app(config), host="0.0.0.0", port=port, log_level="warning", **kw)
     return 0
 
 

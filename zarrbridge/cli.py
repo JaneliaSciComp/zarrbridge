@@ -44,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--build-auto", choices=["on", "off"])
     s.add_argument("--immutable-chunks", action="store_true", default=None)
     s.add_argument("--follow-symlinks", action="store_true", default=None)
+    s.add_argument("--ssl-certfile"); s.add_argument("--ssl-keyfile")
 
     b = sub.add_parser("build", help="build the multiscale cache for a file or every servable file in a dir")
     b.add_argument("target", type=Path)
@@ -89,7 +90,8 @@ def _config(args: argparse.Namespace) -> Config:
             roots[name] = str(Path(path).resolve())
         if roots:
             ov["roots"] = roots
-        for k in ("host", "port", "uds", "token", "insecure", "browse", "trusted_path_header", "immutable_chunks", "follow_symlinks"):
+        for k in ("host", "port", "uds", "token", "insecure", "browse", "trusted_path_header", "immutable_chunks", "follow_symlinks",
+                  "ssl_certfile", "ssl_keyfile"):
             v = getattr(args, k)
             if v is not None and v is not False or (k == "insecure" and v):
                 ov["server"][k] = v
@@ -132,8 +134,11 @@ def _serve(args, config: Config) -> int:
         kw["uds"] = config.server.uds
     else:
         kw.update(host=config.server.host, port=config.server.port)
+    if config.server.ssl_certfile:
+        kw.update(ssl_certfile=config.server.ssl_certfile, ssl_keyfile=config.server.ssl_keyfile or None)
+    scheme = "https" if config.server.ssl_certfile else "http"
     print(f"zarrbridge {__version__} serving roots {list(config.roots) or '(trusted-path mode)'} on "
-          f"{config.server.uds or f'http://{config.server.host}:{config.server.port}/'}", file=sys.stderr)
+          f"{config.server.uds or f'{scheme}://{config.server.host}:{config.server.port}/'}", file=sys.stderr)
     uvicorn.run(app, **kw)
     return 0
 

@@ -39,6 +39,8 @@ class ServerConfig:
     follow_symlinks: bool = False
     log_format: str = "text"
     index_html: str = ""  # path of an HTML file to serve at / instead of the root listing
+    ssl_certfile: str = ""  # HTTPS (needed when viewers are served over https, which blocks mixed content)
+    ssl_keyfile: str = ""
 
 
 @dataclass
