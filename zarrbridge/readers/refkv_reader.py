@@ -159,6 +159,7 @@ def _describe(store):
         levels = [d["path"] for d in datasets]
         scale = next((t["scale"] for t in datasets[0].get("coordinateTransformations", []) if t["type"] == "scale"),
                      [1.0] * len(axes))
+        translation = next((t["translation"] for t in datasets[0].get("coordinateTransformations", []) if t["type"] == "translation"), None)
         for lp in levels:
             ap = f"{ip}/{lp}" if ip else lp
             am = _get_json(store, f"{ap}/zarr.json")
@@ -171,7 +172,8 @@ def _describe(store):
         if classification.state == "servable":
             classification = classify_chunks(shape, chunks, names)
         images.append(ImageInfo(path=ip, shape=shape, dtype=a0.get("data_type", ""), axes=axes, scale=list(scale),
-                                native_chunks=chunks, codecs=a0.get("codecs", []), levels=levels))
+                                native_chunks=chunks, codecs=a0.get("codecs", []), levels=levels,
+                                translation=list(translation) if translation else None))
     if not images:
         raise ReaderRejected("refkv hierarchy holds no OME-Zarr image with datasets")
     return images, transcoded, classification, store

@@ -47,3 +47,11 @@ def test_plan_policy_cases():
     assert choose_factor(tcyx, cfg, "a.tif") == (1, 1, 2, 2)
     lv = plan_levels(tcyx, (1, 1, 2, 2), min_axis=64)
     assert lv[1].chunks == (1, 1, 500, 500) and lv[1].scale == [1.0, 1.0, 2.0, 2.0] and lv[1].translation == [0.0, 0.0, 0.5, 0.5]
+
+
+def test_plan_keeps_level0_translation():
+    i = ImageInfo(path="", shape=(3, 4096, 4096), dtype="uint16", axes=[axis("c"), axis("y", "micrometer"), axis("x", "micrometer")],
+                  scale=[1.0, 0.5, 0.5], native_chunks=(1, 1024, 1024), codecs=[], levels=["0"], translation=[0.0, 100.0, 200.0])
+    lv = plan_levels(i, (1, 2, 2), min_axis=64)
+    assert lv[0].translation == [0.0, 100.0, 200.0]
+    assert lv[1].translation == [0.0, 100.25, 200.25] and lv[2].translation == [0.0, 100.75, 200.75]

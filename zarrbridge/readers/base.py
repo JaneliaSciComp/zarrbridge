@@ -26,6 +26,7 @@ class ImageInfo:
     codecs: list[dict]
     levels: list[str]  # dataset paths present natively ("0", or "0","1",... for stored pyramids)
     is_stack: bool = False
+    translation: list[float] | None = None  # level-0 translation; built levels add their half-pixel offset to it
 
     def level_path(self, k: int | str) -> str:
         return f"{self.path}/{k}" if self.path else str(k)

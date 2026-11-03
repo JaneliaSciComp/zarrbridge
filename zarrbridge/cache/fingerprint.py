@@ -6,6 +6,8 @@ Two version numbers answer different questions:
                       convention, chunk-key encoding). Mismatch -> outdated.
 Only ever increment. Changelog:
   derivation 1: initial. block mean, half-away-from-zero rounding, zero padding, s0*(f-1)/2 translation.
+  derivation 2: level translations add the level-0 translation (t0 + s0*(f-1)/2); v1 dropped t0 for images
+                with a stage offset, so coarse levels rendered displaced from level 0.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ from zarrbridge.cache.locks import is_locked
 from zarrbridge.readers.base import Opened
 
 SCHEMA_VERSION = 1
-DERIVATION_VERSION = 1
+DERIVATION_VERSION = 2
 
 Validity = Literal["valid", "stale", "outdated", "incompatible", "missing", "building"]
 
