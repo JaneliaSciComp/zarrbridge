@@ -1,6 +1,8 @@
 """Codec policy and encode/decode helpers shared by readers, TranscodeStore and the builder."""
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import zstandard
 from zarr.core.array_spec import ArrayConfig, ArraySpec
@@ -17,7 +19,15 @@ OUTPUT_CODECS: list[dict] = [
 ALLOWLIST: frozenset[str] = frozenset(
     {"bytes", "gzip", "zstd", "blosc", "crc32c", "transpose", "sharding_indexed", "numcodecs.zlib"}
 )
-_ZSTD = zstandard.ZstdCompressor(level=3)
+_local = threading.local()
+
+
+def _zstd() -> zstandard.ZstdCompressor:
+    # ZstdCompressor objects are not thread-safe; one per thread.
+    c = getattr(_local, 'zstd', None)
+    if c is None:
+        c = _local.zstd = zstandard.ZstdCompressor(level=3)
+    return c
 
 
 def codec_names(array_meta: dict) -> list[str]:
@@ -42,7 +52,7 @@ def encode_chunk(arr: np.ndarray, codecs: list[dict] | None = None) -> bytes:
         a = np.ascontiguousarray(arr)
         if a.dtype.byteorder == ">" or (a.dtype.byteorder == "=" and not np.little_endian):
             a = a.astype(a.dtype.newbyteorder("<"))
-        return _ZSTD.compress(a.tobytes())
+        return _zstd().compress(a.tobytes())
     meta = _meta_for(arr.shape, arr.dtype, codecs)
     pipe = get_pipeline_class().from_codecs(meta.codecs)
     proto = default_buffer_prototype()
