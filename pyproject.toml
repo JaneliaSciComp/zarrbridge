@@ -1,0 +1,35 @@
+[project]
+name = "zarrbridge"
+version = "0.1.0"
+description = "Virtual OME-Zarr 0.5 serving for legacy image files (MRC, TIFF, and everything refkv parses)"
+readme = "README.md"
+license = "BSD-3-Clause"
+authors = [{ name = "Konrad Rokicki", email = "rokickik@janelia.hhmi.org" }]
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=2",
+  "zarr>=3.4",
+  "zstandard",
+  "tifffile>=2025.1.1",
+  "refkv[zarr,images]==0.2.0",
+  "starlette>=0.40",
+  "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "httpx", "mrcfile", "ome-zarr-models>=1.8", "pytest-asyncio"]
+
+[project.scripts]
+zarrbridge = "zarrbridge.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["zarrbridge"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["slow: long-running tests"]
