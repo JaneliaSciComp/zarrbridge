@@ -67,7 +67,10 @@ def test_queue_dedupes_and_spawns(tmp_path):
     deadline = time.time() + 5
     while time.time() < deadline and q.pending(tmp_path / "c"):
         time.sleep(0.01)
-    assert len(calls) == 1 and calls[0][-4:] == ["build", str(tmp_path / "a.mrc"), "--cache-mode", "beside"]
+    assert len(calls) == 1 and calls[0][-4:] == ["--cache-mode", "beside", "build", str(tmp_path / "a.mrc")]
+    from zarrbridge.cli import build_parser
+    ns = build_parser().parse_args(calls[0][3:])  # the spawned argv must parse with the real CLI
+    assert ns.cmd == "build" and ns.cache_mode == "beside"
     assert q.snapshot()["finished"][str(tmp_path / "c")] == 0
     q.shutdown()
 
