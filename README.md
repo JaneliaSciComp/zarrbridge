@@ -8,15 +8,22 @@ sidecar cache guarded by a fingerprint. Design: `docs/specs/zarrbridge-spec.md`.
 
 ## Install
 
+[pixi](https://pixi.sh) manages the environment, as in fileglancer and x2s3:
+
 ```bash
-uv venv --python 3.12 && . .venv/bin/activate
-uv pip install -e '.[test]'      # refkv is pinned to 0.2.0
-pytest -q
+pixi install                 # default env: python 3.12 + zarrbridge (editable); refkv pinned to 0.2.0
+pixi run zarrbridge --help
+pixi run -e test test        # pytest
+pixi run -e test test-parity # parity tests against a sibling ~/dev/mrc-ng-server checkout
+pixi run dev-launch /path/to/data   # serve with browse page and CORS on
 ```
+
+Plain pip works too: `pip install -e '.[test]'` on Python >= 3.12.
 
 ## Use
 
 ```bash
+# inside `pixi shell`, or prefix each command with `pixi run`
 zarrbridge serve /path/to/data --port 8800 --cors-origin '*'   # browse page at http://127.0.0.1:8800/
 zarrbridge inspect file.tif          # reader, grid, codecs, transcode decision, planned pyramid
 zarrbridge build  file.tif|dir       # exit 0 built, 3 locked, 4 already valid, 5 unservable

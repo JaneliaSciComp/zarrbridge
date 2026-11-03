@@ -34,3 +34,43 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = ["slow: long-running tests"]
+
+# ---- pixi (same shape as x2s3 / fileglancer) ------------------------------------------------------------------
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+
+[tool.pixi.dependencies]
+python = "3.12.*"
+pip = "*"
+
+[tool.pixi.pypi-dependencies]
+zarrbridge = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+serve = "zarrbridge serve"
+build-cache = "zarrbridge build"
+status = "zarrbridge status"
+inspect = "zarrbridge inspect"
+dev-launch = { cmd = "zarrbridge -v serve --port 8800 --cors-origin '*' --browse", description = "serve a directory: pixi run dev-launch /path/to/data" }
+
+[tool.pixi.feature.test.pypi-dependencies]
+zarrbridge = { path = ".", editable = true, extras = ["test"] }
+
+[tool.pixi.feature.test.tasks]
+test = "python -m pytest -q"
+test-slow = "python -m pytest -q -m slow"
+test-parity = { cmd = "pip install --no-deps -e ../mrc-ng-server && python -m pytest -q tests/test_parity_mrcng.py", description = "needs a sibling mrc-ng-server checkout" }
+
+[tool.pixi.feature.release.dependencies]
+twine = ">=6"
+python-build = "*"
+
+[tool.pixi.feature.release.tasks]
+pypi-build = "python -m build"
+pypi-upload = "twine upload dist/*"
+
+[tool.pixi.environments]
+default = { features = [], solve-group = "default" }
+test = { features = ["test"], solve-group = "default" }
+release = { features = ["release"], solve-group = "default" }
