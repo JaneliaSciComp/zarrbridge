@@ -14,7 +14,9 @@ MAX_ENTRIES = 500
 
 
 def neuroglancer_link(url: str, name: str) -> str:
-    state = {"layers": [{"type": "auto", "source": f"zarr3://{url}", "name": name}]}
+    # side panel open on the layer's rendering tab, so the contrast window is one click away
+    state = {"layers": [{"type": "image", "source": f"zarr3://{url}", "name": name, "tab": "rendering"}],
+             "selectedLayer": {"visible": True, "layer": name}}
     return NEUROGLANCER + quote(json.dumps(state, separators=(",", ":")), safe="")
 
 

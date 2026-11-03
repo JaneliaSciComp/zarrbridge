@@ -91,6 +91,10 @@ def test_browse_lists_files(tmp_path):
     assert "d/" in c.get("/").text
     html = c.get("/d/sub/").text
     assert "a.mrc" in html and "neuroglancer-demo" in html and "vizarr" in html
+    import re, json as _json
+    from urllib.parse import unquote
+    state = _json.loads(unquote(re.search(r'neuroglancer-demo\.appspot\.com/#!([^"]+)"', html).group(1)))
+    assert state["layers"][0]["tab"] == "rendering" and state["selectedLayer"] == {"visible": True, "layer": "a.mrc"}
     assert c.get("/d/sub/a.mrc", follow_redirects=False).status_code == 302
     assert c.get("/d/missing/").status_code == 404
 

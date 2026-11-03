@@ -118,7 +118,8 @@ def free_port() -> int:
 
 
 def ng_link(url: str, name: str) -> str:
-    state = {"layers": [{"type": "image", "source": f"zarr3://{url}", "name": name}], "layout": "4panel"}
+    state = {"layers": [{"type": "image", "source": f"zarr3://{url}", "name": name, "tab": "rendering"}],
+             "selectedLayer": {"visible": True, "layer": name}, "layout": "4panel"}
     return NEUROGLANCER + quote(json.dumps(state, separators=(",", ":")), safe="")
 
 
