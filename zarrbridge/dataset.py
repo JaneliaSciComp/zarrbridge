@@ -41,7 +41,8 @@ class Dataset:
         self.last_used = time.time()
         images = [i.path for i in opened.images]
         self.transcode = TranscodeStore(opened.store, max_decodes=config.max_decodes())
-        self.overlay = PyramidOverlay(self.transcode, cache_dir, images, lambda: self.validity == "valid")
+        self._native_levels = {i.path: len(i.levels) for i in opened.images}
+        self.overlay = PyramidOverlay(self.transcode, cache_dir, self._routes_to_cache)
         self.store = MetadataStore(self.overlay, cache_dir, images, lambda: self.validity == "valid", self._native_reason)
         self.recheck(force=True)
 
@@ -96,6 +97,13 @@ class Dataset:
             return (st.st_size, st.st_mtime_ns)
         except OSError:
             return None
+
+    def _routes_to_cache(self, image_path: str, level: int) -> bool:
+        """Only levels the builder wrote: images with a stored (native) pyramid are never overlaid."""
+        if self.validity != "valid" or self._fingerprint is None:
+            return False
+        built = self._fingerprint.get("plan", {}).get("images", {})
+        return image_path in built and level >= self._native_levels.get(image_path, 1)
 
     def source_changed(self) -> bool:
         """True when the file on disk no longer matches the identity we opened (reopen needed)."""

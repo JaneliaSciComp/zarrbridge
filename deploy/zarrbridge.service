@@ -1,0 +1,13 @@
+# systemd --user unit: ~/.config/systemd/user/zarrbridge.service ; systemctl --user enable --now zarrbridge
+[Unit]
+Description=zarrbridge personal OME-Zarr data server
+After=network.target
+
+[Service]
+Environment=ZB_CONFIG=%h/.config/zarrbridge/zarrbridge.toml
+ExecStart=%h/.local/bin/zarrbridge serve --config %h/.config/zarrbridge/zarrbridge.toml
+Restart=on-failure
+Nice=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,48 @@
+[server]
+host = "127.0.0.1"
+port = 8800
+uds = ""
+token = ""
+cors_origins = []
+browse = true
+trusted_path_header = ""
+allow_prefixes = ["/groups/**", "/nrs/**"]
+immutable_chunks = false
+
+[roots]
+data = "/path/to/data"
+scratch = "/path/to/scratch"
+
+[cache]
+mode = "beside"            # beside | central
+central_root = "~/.cache/zarrbridge/pyramids"
+recheck_seconds = 30
+
+[build]
+auto = true
+auto_max_bytes = "20GiB"
+slots = 1
+nice = 10
+factor = "auto"            # auto | "2,2,1" | "2,2,2"  (x,y,z)
+min_axis = 64
+max_levels = 8
+codec = "zstd:3"
+method = "mean"
+[build.factor_by_glob]
+"*.st" = "2,2,1"
+
+[readers.mrc]
+chunk_mode = "cubes"
+chunk_shape = [64, 64, 64]
+stack_globs = ["*.st", "*.ali", "*_tilt.mrc"]
+[readers.tiff]
+prefer = "refkv"           # refkv | tifffile
+[readers.refkv]
+connections = 8
+max_reads = 64
+
+[limits]
+max_open_datasets = 64
+chunk_cache_bytes = "256MiB"
+max_decodes = 0            # 0 -> os.cpu_count()
+max_chunk_bytes = "64MiB"

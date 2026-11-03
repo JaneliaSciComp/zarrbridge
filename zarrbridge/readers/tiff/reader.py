@@ -41,6 +41,9 @@ class _Level:
     itemsize: int
     pages: list[Any]  # TiffPage | TiffFrame
     byte_length: int
+    order: tuple[int, ...]  # transpose order: encoded (file) axis i == presented axis order[i]
+    orig_shape: tuple[int, ...]
+    orig_chunks: tuple[int, ...]
 
 
 class TiffReader:
@@ -85,7 +88,9 @@ class TiffReader:
 
         for si, s in enumerate(series):
             img_path = str(si) if multi else ""
-            axes = tmeta.axis_names(s.axes)
+            orig_axes = tmeta.axis_names(s.axes)
+            order = tmeta.canonical_order(orig_axes)  # NGFF: t, c, z, y, x
+            axes = [orig_axes[i] for i in tmeta.inverse(order)]
             page0 = s.pages[0] if s.pages[0] is not None else s.keyframe
             if page0.imagedepth != 1:
                 raise ReaderRejected("volumetric (ImageDepth > 1) TIFF tiles are not supported")
@@ -94,18 +99,20 @@ class TiffReader:
             datasets = []
             level_paths = []
             for li, lvl in enumerate(s.levels):
-                lv = self._level(f"{img_path}/{li}" if img_path else str(li), lvl, axes, max_chunk)
+                lv = self._level(f"{img_path}/{li}" if img_path else str(li), lvl, order, max_chunk)
                 if lv is None:
                     continue
                 levels[lv.array_path] = lv
                 grids[lv.array_path] = lv.grid
                 codecs = [{"name": "bytes", "configuration": {"endian": lv.endian}}] if lv.passthrough else OUTPUT_CODECS
+                if lv.order != tuple(range(len(lv.order))):
+                    codecs = [{"name": "transpose", "configuration": {"order": list(lv.order)}}] + codecs
                 if not lv.passthrough:
                     transcoded.add(lv.array_path)
                 dtype = lvl.dtype
                 metadata[f"{lv.array_path}/zarr.json"] = omezarr.dumps(
                     omezarr.array_meta(lv.shape, lv.chunks, dtype, codecs, axes))
-                factor = [max(1, round(s0 / s1)) for s0, s1 in zip(s.levels[0].shape, lvl.shape)]
+                factor = [max(1, round(s0 / s1)) for s0, s1 in zip(levels[(f"{img_path}/0" if img_path else "0")].shape, lv.shape)]
                 scale, translation = omezarr.level_transforms(scale0, factor)
                 datasets.append(omezarr.dataset_entry(str(li), scale, translation))
                 level_paths.append(str(li))
@@ -160,7 +167,7 @@ class TiffReader:
                       close=close, fd=fd, transcoded=transcoded)
 
     @staticmethod
-    def _level(array_path: str, lvl: tifffile.TiffPageSeries, axes: list[str], max_chunk: int) -> _Level | None:
+    def _level(array_path: str, lvl: tifffile.TiffPageSeries, order: tuple[int, ...], max_chunk: int) -> _Level | None:
         # TiffFrame objects carry their own offsets/bytecounts; decoding goes through their keyframe.
         pages = [p for p in lvl.pages if p is not None]
         if not pages:
@@ -185,12 +192,19 @@ class TiffReader:
         endian = "big" if page0.parent.byteorder == ">" else "little"
         itemsize = np.dtype(lvl.dtype).itemsize
         byte_length = int(np.prod(chunks)) * itemsize
-        return _Level(array_path, shape, chunks, omezarr.grid_shape(shape, chunks), n_lead, page_grid,
+        if len(order) != len(shape):
+            return None
+        inv = tmeta.inverse(order)
+        pshape = tuple(shape[i] for i in inv)
+        pchunks = tuple(chunks[i] for i in inv)
+        return _Level(array_path, pshape, pchunks, omezarr.grid_shape(pshape, pchunks), n_lead, page_grid,
                       tuple(int(c) for c in page0.chunked), planar, has_samples, passthrough, endian, itemsize,
-                      pages, max(int(b) for p in pages for b in p.databytecounts) if not passthrough else byte_length)
+                      pages, max(int(b) for p in pages for b in p.databytecounts) if not passthrough else byte_length,
+                      tuple(order), shape, chunks)
 
 
 def _read_chunk(fds: FdCache, path: Path, lv: _Level, coords: tuple[int, ...]) -> bytes | None:
+    coords = tuple(coords[o] for o in lv.order)  # presented (NGFF) order -> file order
     lead, within = coords[:lv.n_lead], coords[lv.n_lead:]
     page_index = int(np.ravel_multi_index(lead, lv.page_grid)) if lv.n_lead else 0
     page = lv.pages[page_index]
@@ -201,7 +215,7 @@ def _read_chunk(fds: FdCache, path: Path, lv: _Level, coords: tuple[int, ...]) -
         return None
     offset, count = int(page.dataoffsets[seg]), int(page.databytecounts[seg])
     if count == 0:
-        return b"\x00" * lv.byte_length if lv.passthrough else encode_chunk(np.zeros(lv.chunks, dtype=keyframe.dtype))
+        return b"\x00" * lv.byte_length if lv.passthrough else encode_chunk(np.zeros(lv.orig_chunks, dtype=keyframe.dtype))
     with fds.open(path) as h:
         raw = pread_exact(h.fd, count, offset)
     if lv.passthrough:
@@ -216,4 +230,4 @@ def _read_chunk(fds: FdCache, path: Path, lv: _Level, coords: tuple[int, ...]) -
     else:
         arr = arr[0, :, :, 0]
     arr = arr.reshape((1,) * lv.n_lead + arr.shape)
-    return encode_chunk(pad_chunk(arr, lv.chunks))
+    return encode_chunk(pad_chunk(arr, lv.orig_chunks))  # encoded layout is file order; `transpose` codec declares it

@@ -52,11 +52,13 @@ def test_imagej_hyperstack_axes(tmp_path, cfg):
                   metadata={"axes": "TZCYX", "spacing": 2.0, "unit": "um"})
     op = TiffReader().open(p, cfg)
     img = op.images[0]
-    assert img.axis_names == ["z", "c", "y", "x"] and img.shape == (5, 2, 100, 120)
-    assert img.scale == [2.0, 1.0, 0.5, 0.5]
+    assert img.axis_names == ["c", "z", "y", "x"] and img.shape == (2, 5, 100, 120) and img.native_chunks == (1, 1, 100, 120)
+    assert img.scale == [1.0, 2.0, 0.5, 0.5]
     meta = json.loads(get(op.store, "zarr.json"))["attributes"]["ome"]["multiscales"][0]
-    assert meta["axes"][0] == {"name": "z", "type": "space", "unit": "micrometer"} and meta["axes"][1] == {"name": "c", "type": "channel"}
-    assert np.array_equal(zarr.open_group(op.store, mode="r")["0"][:], a[0])
+    assert meta["axes"][1] == {"name": "z", "type": "space", "unit": "micrometer"} and meta["axes"][0] == {"name": "c", "type": "channel"}
+    arr = json.loads(get(op.store, "0/zarr.json"))
+    assert arr["codecs"][0] == {"name": "transpose", "configuration": {"order": [1, 0, 2, 3]}}
+    assert np.array_equal(zarr.open_group(op.store, mode="r")["0"][:], np.moveaxis(a[0], 1, 0))
 
 
 def test_ome_pyramid_and_series(tmp_path, cfg):
@@ -83,8 +85,8 @@ def test_ome_pyramid_and_series(tmp_path, cfg):
 def test_rgb_contig_and_planar(tmp_path, cfg):
     rgb = np.random.default_rng(0).integers(0, 255, (100, 120, 3), dtype=np.uint8)
     op = TiffReader().open(make_tiff(tmp_path / "rgb.tif", rgb, photometric="rgb", rowsperstrip=32, compression="lzw"), cfg)
-    assert op.images[0].axis_names == ["y", "x", "c"] and op.images[0].native_chunks == (32, 120, 3)
-    assert np.array_equal(zarr.open_group(op.store, mode="r")["0"][:], rgb)
+    assert op.images[0].axis_names == ["c", "y", "x"] and op.images[0].native_chunks == (3, 32, 120)
+    assert np.array_equal(zarr.open_group(op.store, mode="r")["0"][:], np.moveaxis(rgb, -1, 0))
     op2 = TiffReader().open(make_tiff(tmp_path / "rgbp.tif", np.moveaxis(rgb, -1, 0), photometric="rgb",
                                       planarconfig="separate", rowsperstrip=32), cfg)
     assert op2.images[0].axis_names == ["c", "y", "x"] and op2.images[0].native_chunks == (1, 32, 120)

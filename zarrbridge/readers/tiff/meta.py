@@ -79,3 +79,25 @@ def ome_axes(axes: list[str], unit: str | None, sizes: dict[str, float]) -> list
             d["name"] = a
             out.append(d)
     return out
+
+
+_RANK = {"t": 0, "c": 1, "z": 2, "y": 4, "x": 5}
+
+
+def canonical_order(axes: list[str]) -> tuple[int, ...]:
+    """Transpose order putting axes in NGFF order (t, c, z, y, x; unknown axes before z):
+    encoded (file) axis i corresponds to presented axis order[i]."""
+    def rank(name: str) -> float:
+        return _RANK.get(name.rstrip("0123456789"), 3)
+    presented = sorted(range(len(axes)), key=lambda i: (rank(axes[i]), i))  # presented position -> file axis
+    order = [0] * len(axes)
+    for pos, file_axis in enumerate(presented):
+        order[file_axis] = pos
+    return tuple(order)
+
+
+def inverse(order: tuple[int, ...]) -> tuple[int, ...]:
+    inv = [0] * len(order)
+    for i, o in enumerate(order):
+        inv[o] = i
+    return tuple(inv)

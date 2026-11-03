@@ -13,15 +13,15 @@ from zarrbridge.store.keys import array_path_of, level_of
 
 
 class PyramidOverlay(WrapperStore):
-    def __init__(self, store: Store, cache_dir: Path, images: list[str], is_valid: Callable[[], bool]) -> None:
+    def __init__(self, store: Store, cache_dir: Path, routes: Callable[[str, int], bool]) -> None:
+        """`routes(image_path, level)` says whether that level is served from the cache right now."""
         super().__init__(store)
         self.cache_dir = Path(cache_dir)
-        self.images = set(images)
-        self.is_valid = is_valid
+        self.routes = routes
         self._local = LocalStore(str(self.cache_dir), read_only=True)
 
     def _with_store(self, store):
-        return type(self)(store, self.cache_dir, list(self.images), self.is_valid)
+        return type(self)(store, self.cache_dir, self.routes)
 
     def __eq__(self, other: object) -> bool:
         return self is other
@@ -31,7 +31,7 @@ class PyramidOverlay(WrapperStore):
         if ap is None:
             return False
         lv = level_of(ap)
-        return lv is not None and lv[1] >= 1 and lv[0] in self.images and self.is_valid()
+        return lv is not None and lv[1] >= 1 and self.routes(lv[0], lv[1])
 
     async def get(self, key: str, prototype: BufferPrototype, byte_range: ByteRequest | None = None) -> Buffer | None:
         if self.routes_to_cache(key):
