@@ -42,10 +42,6 @@ class NonStandardAxisOrderError(MrcFormatError):
     pass
 
 
-class NonStandardGridSizeError(MrcFormatError):
-    pass
-
-
 class TruncatedFileError(MrcFormatError):
     pass
 
@@ -180,11 +176,12 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
     if mx == 0 or my == 0 or mz == 0 or all(c == 0.0 for c in cella):
         voxel_size = (1.0, 1.0, 1.0)
         voxel_size_is_default = True
+    elif not is_stack and (mx, my, mz) != (nx, ny, nz):
+        # mrc-ng-server refused these files. Serving at a default scale, flagged, beats not serving:
+        # the pixels are fine, only the scale bar is unknown. Status carries the `voxel_size_default` advice.
+        voxel_size = (1.0, 1.0, 1.0)
+        voxel_size_is_default = True
     else:
-        if not is_stack and (mx, my, mz) != (nx, ny, nz):
-            raise NonStandardGridSizeError(
-                f"grid size (mx,my,mz)=({mx},{my},{mz}) does not match sample count "
-                f"(nx,ny,nz)=({nx},{ny},{nz}); per-axis voxel size would be unreliable")
         voxel_size = tuple((c / m) if c != 0.0 else 1.0 for c, m in zip(cella, (mx, my, mz)))
         voxel_size_is_default = any(c == 0.0 for c in (cella[:2] if is_stack else cella))
     if is_stack:

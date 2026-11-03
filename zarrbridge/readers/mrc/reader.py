@@ -92,5 +92,7 @@ class MrcReader:
         identity = SourceIdentity(str(path), st.st_size, st.st_mtime_ns, hhash,
                                   extras={"mode": hdr.mode, "is_image_stack": hdr.is_image_stack, "chunk_shape": list(chunk)})
         return Opened(store=ChunkStore(metadata, chunk_fn, grids), images=[image], identity=identity,
-                      classification=Classification("servable"), reader_name=self.name, reader_version=self.version,
+                      classification=Classification("servable", "voxel_size_default: header grid/cella unusable, serving at 1 angstrom"
+                                                     if hdr.voxel_size_is_default else None),
+                      reader_name=self.name, reader_version=self.version,
                       close=close, fd=fd, read_region=read_region)

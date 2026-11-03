@@ -34,7 +34,8 @@ method = "mean"
 [readers.mrc]
 chunk_mode = "cubes"
 chunk_shape = [64, 64, 64]
-stack_globs = ["*.st", "*.ali", "*_tilt.mrc"]
+stack_globs = ["*.st", "*.ali", "*_tilt.mrc", "*/TiltSeries/*", "*/Gains/*"]   # z is a slice index
+volume_globs = ["*/Tomograms/*", "*_ctf.mrc"]                                  # wins over stack_globs
 [readers.tiff]
 prefer = "refkv"           # refkv | tifffile
 [readers.refkv]

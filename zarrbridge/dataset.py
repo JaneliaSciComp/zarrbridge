@@ -175,6 +175,8 @@ class Dataset:
                   "planned": planned, "progress": extra.get("progress", 1.0 if state == "multiscale" else 0.0),
                   "eta_s": extra.get("eta_s"), "reason": extra.get("reason")}
         advice = ["xy_only"] if self.opened.classification.state == "servable_2d" else []
+        if self.opened.classification.state != "unservable" and self.opened.classification.reason:
+            advice.append(self.opened.classification.reason.split(":")[0])
         return {
             "path": str(self.path), "reader": self.opened.reader_name, "reader_reason": self.opened.reader_reason,
             "classification": self.opened.classification.state,

@@ -49,3 +49,17 @@ def test_stack_glob_sets_z_voxel(tmp_path, cfg):
     op = MrcReader().open(p, cfg)
     assert op.images[0].is_stack and op.images[0].scale == [10.0, 2.0, 2.0]
     assert MrcReader.sniff(p, open(p, "rb").read(1024)) and not MrcReader.sniff(tmp_path / "x.tif", b"II*\0" + b"\0" * 300)
+
+
+def test_tiltseries_dir_is_stack_and_grid_mismatch_degrades(tmp_path, cfg):
+    # Janelia layout: .../TiltSeries/<name>/Stack/<name>.mrc with mx=my=mz=1 and the pixel size in cella
+    p = make_mrc(tmp_path / "TiltSeries" / "x" / "Stack" / "x.mrc", (64, 48, 5), mode=2, voxel_size_angstrom=2.5, grid_size=(1, 1, 1))
+    op = MrcReader().open(p, cfg)
+    assert op.images[0].is_stack and op.images[0].scale == [10.0, 2.5, 2.5] and op.classification.reason is None
+    # same header under Tomograms/ is a volume: served at a flagged default scale rather than refused
+    q = make_mrc(tmp_path / "Tomograms" / "v.mrc", (64, 48, 5), mode=2, voxel_size_angstrom=2.5, grid_size=(1, 1, 1))
+    op2 = MrcReader().open(q, cfg)
+    assert op2.classification.state == "servable" and op2.classification.reason.startswith("voxel_size_default")
+    assert op2.images[0].scale == [1.0, 1.0, 1.0] and json.loads(get(op2.store, "zarr.json"))["attributes"]["mrc"]["voxel_size_is_default"]
+    from zarrbridge.dataset import Dataset
+    assert "voxel_size_default" in Dataset(q, cfg, op2, tmp_path / "c", "beside").status()["advice"]

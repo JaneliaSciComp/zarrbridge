@@ -66,8 +66,8 @@ class BuildConfig:
 class MrcReaderConfig:
     chunk_mode: str = "cubes"
     chunk_shape: tuple[int, int, int] = (64, 64, 64)
-    stack_globs: list[str] = field(default_factory=lambda: ["*.st", "*.ali", "*_tilt.mrc"])
-    volume_globs: list[str] = field(default_factory=list)
+    stack_globs: list[str] = field(default_factory=lambda: ["*.st", "*.ali", "*_tilt.mrc", "*/TiltSeries/*", "*/Gains/*"])
+    volume_globs: list[str] = field(default_factory=lambda: ["*/Tomograms/*", "*_ctf.mrc"])
     assume_mode0: str | None = None
 
 
