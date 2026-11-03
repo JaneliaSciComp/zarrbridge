@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest", "httpx", "mrcfile", "ome-zarr-models>=1.8", "pytest-asyncio"]
+test = ["pytest", "httpx", "mrcfile", "ome-zarr-models>=1.8", "pytest-asyncio", "fsspec", "aiohttp", "requests"]
 
 [project.scripts]
 zarrbridge = "zarrbridge.cli:main"

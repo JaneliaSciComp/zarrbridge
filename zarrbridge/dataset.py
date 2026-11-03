@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from zarrbridge.build.queue import AutoBuildQueue
 from zarrbridge.cache.fingerprint import Validity, fingerprint_digest, read_fingerprint, validate
-from zarrbridge.cache.layout import BUILD_JSON, INDEX, cache_bytes, cache_dir_for
+from zarrbridge.cache.layout import BUILD_JSON, FINGERPRINT, INDEX, cache_bytes, cache_dir_for
 from zarrbridge.cache.locks import is_locked
 from zarrbridge.readers.base import Opened
 from zarrbridge.readers.registry import open_dataset_reader
@@ -34,6 +34,7 @@ class Dataset:
         self.mismatch: str | None = None
         self._fingerprint: dict | None = None
         self._fp_digest = ""
+        self._fp_key: tuple | None = None
         self._checked = 0.0
         self._lock = threading.Lock()
         self.opened_at = time.time()
@@ -58,10 +59,12 @@ class Dataset:
         """Re-validate at most every cache.recheck_seconds. fstat on the held fd catches a replaced file under
         the same path even when NFS attribute caching hides it from stat()."""
         now = time.time()
-        if not force and now - self._checked < self.config.cache.recheck_seconds:
+        fp_key = self._fingerprint_key()
+        if not force and fp_key == self._fp_key and now - self._checked < self.config.cache.recheck_seconds:
             return
         with self._lock:
             self._checked = now
+            self._fp_key = fp_key
             ident = self.opened.identity
             if self.opened.fd is not None:
                 try:
@@ -85,6 +88,14 @@ class Dataset:
                 self._fp_digest = fingerprint_digest(self._fingerprint) if self._fingerprint else ""
             else:
                 self._fingerprint, self._fp_digest = None, ""
+
+    def _fingerprint_key(self) -> tuple | None:
+        # one stat per request: a build that completes is picked up on the next request, not after recheck_seconds
+        try:
+            st = os.stat(self.cache_dir / FINGERPRINT)
+            return (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return None
 
     def source_changed(self) -> bool:
         """True when the file on disk no longer matches the identity we opened (reopen needed)."""
