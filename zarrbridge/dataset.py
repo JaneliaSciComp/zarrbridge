@@ -140,6 +140,9 @@ class Dataset:
         if cls.state == "unservable":
             return "unservable", {"reason": cls.reason}
         if self.validity == "valid":
+            plan = (self._fingerprint or {}).get("plan", {})
+            if not plan.get("images"):
+                return "native", {"reason": "no level above native in the plan (image smaller than build.min_axis)"}
             return "multiscale", {"reason": None}
         bj = self._build_json()
         if is_locked(self.cache_dir):

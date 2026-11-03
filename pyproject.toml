@@ -53,6 +53,7 @@ build-cache = "zarrbridge build"
 status = "zarrbridge status"
 inspect = "zarrbridge inspect"
 dev-launch = { cmd = "zarrbridge -v serve --port 8800 --cors-origin '*' --browse", description = "serve a directory: pixi run dev-launch /path/to/data" }
+demo = { cmd = "python demo/run.py", description = "download public samples of every format (once) and serve them on 0.0.0.0 with an index page" }
 
 [tool.pixi.feature.test.pypi-dependencies]
 zarrbridge = { path = ".", editable = true, extras = ["test"] }

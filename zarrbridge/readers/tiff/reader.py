@@ -216,7 +216,8 @@ def _read_chunk(fds: FdCache, path: Path, lv: _Level, coords: tuple[int, ...]) -
     offset, count = int(page.dataoffsets[seg]), int(page.databytecounts[seg])
     if count == 0:
         return b"\x00" * lv.byte_length if lv.passthrough else encode_chunk(np.zeros(lv.orig_chunks, dtype=keyframe.dtype))
-    with fds.open(path) as h:
+    page_file = Path(page.parent.filehandle.path)  # multi-file OME-TIFF: the page may live in a companion file
+    with fds.open(page_file if page_file.exists() else path) as h:
         raw = pread_exact(h.fd, count, offset)
     if lv.passthrough:
         if len(raw) < lv.byte_length:

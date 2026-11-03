@@ -66,7 +66,7 @@ class RefkvReader:
                 if pin["url"] in (str(path), path.as_uri()) and pin["size"] not in (None, st.st_size):
                     raise ReaderRejected("refkv pin mismatch: size")
         store = rzarr.store(rs)
-        images, transcoded, classification = _describe(store)
+        images, transcoded, classification, store = _describe(store)
         identity = SourceIdentity(str(path), st.st_size, st.st_mtime_ns, hh,
                                   extras={"pins": pins, "format": fmt})
         fd = os.open(str(path), os.O_RDONLY)
@@ -118,7 +118,8 @@ def _get_json(store, key: str) -> dict | None:
     return None if buf is None else json.loads(buf.to_bytes())
 
 
-def _describe(store) -> tuple[list[ImageInfo], set[str], Classification]:
+def _describe(store):
+    """(images, transcoded array paths, classification, store). Bare arrays (FITS HDUs, npy) are wrapped as images."""
     root = _get_json(store, "zarr.json")
     if root is None:
         raise ReaderRejected("refkv store has no root zarr.json")
@@ -133,7 +134,18 @@ def _describe(store) -> tuple[list[ImageInfo], set[str], Classification]:
         else:
             image_paths = [k for k in run_sync(_collect(store.list_dir(""))) if k.isdigit()]
     if not image_paths:
-        raise ReaderRejected("refkv hierarchy holds no OME-Zarr image")
+        from zarrbridge.store.bare import BareArrayStore
+        bare: dict[str, dict] = {}
+        for name in run_sync(_collect(store.list_dir(""))):
+            if name in ("zarr.json", "refkv_source", "OME"):
+                continue
+            m = _get_json(store, f"{name}/zarr.json")
+            if m and m.get("node_type") == "array" and len(m.get("shape", [])) >= 2:
+                bare[name] = m
+        if not bare:
+            raise ReaderRejected("refkv hierarchy holds no OME-Zarr image or 2-D+ array")
+        store = BareArrayStore(store, bare)
+        image_paths = sorted(bare)
     images: list[ImageInfo] = []
     transcoded: set[str] = set()
     classification = Classification("servable")
@@ -162,7 +174,7 @@ def _describe(store) -> tuple[list[ImageInfo], set[str], Classification]:
                                 native_chunks=chunks, codecs=a0.get("codecs", []), levels=levels))
     if not images:
         raise ReaderRejected("refkv hierarchy holds no OME-Zarr image with datasets")
-    return images, transcoded, classification
+    return images, transcoded, classification, store
 
 
 async def _collect(ait):

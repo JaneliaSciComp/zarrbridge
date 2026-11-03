@@ -141,6 +141,11 @@ def _routes(config: Config, resolver: DatasetResolver, queue: AutoBuildQueue | N
         return resp
 
     async def root(request: Request) -> Response:
+        if config.server.index_html:
+            try:
+                return HTMLResponse(Path(config.server.index_html).read_text())
+            except OSError:
+                return Response(status_code=404)
         if trusted or not config.server.browse:
             return Response(status_code=404)
         return HTMLResponse(browse.render_roots(config.roots))

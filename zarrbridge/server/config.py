@@ -38,6 +38,7 @@ class ServerConfig:
     insecure: bool = False
     follow_symlinks: bool = False
     log_format: str = "text"
+    index_html: str = ""  # path of an HTML file to serve at / instead of the root listing
 
 
 @dataclass

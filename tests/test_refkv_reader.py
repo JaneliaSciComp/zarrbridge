@@ -61,3 +61,14 @@ def test_czi_multiscene_collection(cfg):
     assert op.reader_name == "refkv" and [i.path for i in op.images] == ["0", "1", "2", "3", "4"]
     g = zarr.open_group(op.store, mode="r")
     assert g["0/0"].shape == tuple(op.images[0].shape)
+
+
+def test_bare_arrays_become_images(tmp_path, cfg):
+    np.save(tmp_path / "a.npy", np.arange(20 * 30, dtype="<i2").reshape(20, 30))
+    op = open_dataset_reader(tmp_path / "a.npy", cfg)
+    assert op.reader_name == "refkv" and [i.path for i in op.images] == ["array"] and op.images[0].levels == ["0"]
+    g = zarr.open_group(op.store, mode="r")
+    assert g["array"].attrs["ome"]["multiscales"][0]["axes"][0]["name"] == "y"
+    assert np.array_equal(g["array/0"][:], np.arange(600, dtype="<i2").reshape(20, 30))
+    from ome_zarr_models.v05.image import Image
+    Image.from_zarr(g["array"])
