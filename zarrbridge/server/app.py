@@ -60,7 +60,8 @@ class ViewerProxy:
     """GET passthrough for a hosted Neuroglancer (fileglancer's dev approach). Buffers each response; assets
     with a content hash in the name are cached for the process lifetime, index.html for `ttl` seconds."""
 
-    FORWARD = ("content-type", "cache-control", "etag", "last-modified")
+    # content-encoding too: appspot gzips regardless of Accept-Encoding, and the browser must know to inflate
+    FORWARD = ("content-type", "content-encoding", "cache-control", "etag", "last-modified")
 
     def __init__(self, upstream: str, ttl: float = 300.0) -> None:
         self.upstream = upstream.rstrip("/")
