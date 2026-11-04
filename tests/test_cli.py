@@ -43,6 +43,14 @@ def test_cli_inspect_and_index(tmp_path, capsys):
     assert "tiff" in out and "servable_2d" in out and "transcode: yes" in out and "factor [1, 2, 2]" in out
     assert main(["inspect", str(p), "--json"]) == 0
     j = json.loads(capsys.readouterr().out)
+    assert len(j["plan"][0]["levels"]) == 1  # 100x120 is below min_axis: nothing to build
+    import os
+    os.environ["ZB_BUILD_MIN_AXIS"] = "4"
+    try:
+        assert main(["inspect", str(p), "--json"]) == 0
+    finally:
+        del os.environ["ZB_BUILD_MIN_AXIS"]
+    j = json.loads(capsys.readouterr().out)
     assert j["plan"][0]["levels"][1]["shape"] == [5, 50, 60] and j["estimated_cache_bytes"] > 0
     assert main(["index", str(p)]) == 5  # refkv rejects plain stacks
     o = make_tiff(tmp_path / "o.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))

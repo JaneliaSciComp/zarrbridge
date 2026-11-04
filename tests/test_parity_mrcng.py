@@ -28,7 +28,9 @@ def mrcng():
     return sys.modules["mrcng"]
 
 
-@pytest.mark.parametrize("shape,chunk,min_axis,levels", [((32, 32, 32), 8, 8, 3), ((36, 20, 12), 8, 4, 3), ((101, 37, 13), 16, 4, 4)])
+# mrc-ng-server stops each axis individually at min_axis; zarrbridge halves all axes together (derivation 4), so
+# the cases stay within the levels where both plans agree.
+@pytest.mark.parametrize("shape,chunk,min_axis,levels", [((32, 32, 32), 8, 8, 3), ((36, 20, 12), 8, 4, 3), ((101, 37, 13), 16, 4, 3)])
 def test_parity_level0_and_pyramid(tmp_path, mrcng, shape, chunk, min_axis, levels):
     from mrcng.fingerprint import Params
     from mrcng.pyramid import build_one

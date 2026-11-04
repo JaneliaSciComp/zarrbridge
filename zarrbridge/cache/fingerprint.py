@@ -10,6 +10,9 @@ Only ever increment. Changelog:
                 with a stage offset, so coarse levels rendered displaced from level 0.
   derivation 3: float64/float16 sources build float32 levels (transcode.dtype_map); viewers have no float64.
                 Changing transcode.dtype_map in config needs `zarrbridge build --force`.
+  derivation 4: downsampled axes halve together; the pyramid stops when every downsampled axis would fall below
+                min_axis. v3 stopped axes individually, leaving an anisotropic last level that made Neuroglancer
+                render only that level once its multi-channel setup reordered the display dimensions.
 """
 from __future__ import annotations
 
@@ -29,7 +32,7 @@ from zarrbridge.cache.locks import is_locked
 from zarrbridge.readers.base import Opened
 
 SCHEMA_VERSION = 1
-DERIVATION_VERSION = 3
+DERIVATION_VERSION = 4
 
 Validity = Literal["valid", "stale", "outdated", "incompatible", "missing", "building"]
 

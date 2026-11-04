@@ -21,6 +21,7 @@ def test_plan_auto_2d_chunks_gives_221_tiles():
     assert lv[1].shape == (1000, 2048, 2048) and lv[1].chunks == (1, 512, 512)
     assert lv[1].scale == [1.0, 2.0, 2.0] and lv[1].translation == [0.0, 0.5, 0.5]
     assert len(lv) == 7 and lv[6].shape == (1000, 64, 64) and lv[6].chunks == (1, 64, 64)
+    assert all(l.shape[1] * 4096 // 4096 == l.shape[2] for l in lv)  # square image stays square at every level
 
 
 def test_plan_cubes_isotropic_gives_222():
@@ -30,7 +31,8 @@ def test_plan_cubes_isotropic_gives_222():
     lv = plan_levels(i, (2, 2, 2), min_axis=64, max_levels=8)
     assert lv[1].shape == (250, 2000, 2000) and lv[1].chunks == (64, 64, 64)
     assert lv[3].shape == (63, 500, 500) and lv[3].chunks == (63, 64, 64)
-    assert lv[4].shape == (63, 250, 250)  # z stopped at < 64
+    assert lv[4].shape == (32, 250, 250) and lv[4].factor == (16, 16, 16)  # axes halve together: isotropic voxels
+    assert lv[-1].shape == (16, 125, 125) and len(lv) == 6  # stops once every axis would fall below 64
     assert lv[2].translation == [6.8 * 1.5] * 3
 
 
@@ -55,3 +57,13 @@ def test_plan_keeps_level0_translation():
     lv = plan_levels(i, (1, 2, 2), min_axis=64)
     assert lv[0].translation == [0.0, 100.0, 200.0]
     assert lv[1].translation == [0.0, 100.25, 200.25] and lv[2].translation == [0.0, 100.75, 200.75]
+
+
+def test_plan_levels_never_anisotropic_relative_to_previous():
+    i = img((3, 5634, 3720), (1, 1024, 1024))
+    lv = plan_levels(ImageInfo(path="", shape=(3, 5634, 3720), dtype="uint16", axes=[axis("c"), axis("y"), axis("x")], scale=[1, 1, 1],
+                               native_chunks=(1, 1024, 1024), codecs=[], levels=["0"]), (1, 2, 2), min_axis=64, max_levels=8)
+    for a, b in zip(lv, lv[1:]):
+        steps = {b.factor[k] // a.factor[k] for k in (1, 2)}
+        assert steps == {2}, (a, b)
+    assert lv[-1].shape == (3, 89, 59)
