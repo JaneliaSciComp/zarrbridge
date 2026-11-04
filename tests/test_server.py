@@ -148,7 +148,9 @@ def test_viewer_passthrough(tmp_path, monkeypatch):
         if path == "index.html":
             return 200, b"<title>neuroglancer</title>", {"Content-Type": "text/html"}
         if path == "main.0123456789ab.js":
-            return 200, b"js", {"Content-Type": "application/javascript", "Content-Encoding": "gzip"}
+            import gzip
+            return 200, gzip.compress(b"js"), {"content-type": "application/javascript", "content-encoding": "gzip",
+                                               "cache-control": "public, max-age=600"}
         return 404, b"", {}
     monkeypatch.setattr(appmod.ViewerProxy, "fetch", fake_fetch)
     make_mrc(tmp_path / "d" / "a.mrc", (8, 8, 8))
@@ -156,8 +158,8 @@ def test_viewer_passthrough(tmp_path, monkeypatch):
     assert c.get("/neuroglancer", follow_redirects=False).status_code == 307
     assert c.get("/neuroglancer/").text == "<title>neuroglancer</title>"
     r = c.get("/neuroglancer/main.0123456789ab.js")
-    assert r.content == b"js" and r.headers["cache-control"].startswith("public, max-age=31536000")
-    assert r.headers["content-encoding"] == "gzip"  # forwarded so the browser inflates upstream gzip
+    assert r.content == b"js"  # httpx inflated it: Content-Encoding was forwarded
+    assert r.headers.get_list("cache-control") == ["public, max-age=31536000, immutable"]  # replaced, not duplicated
     c.get("/neuroglancer/main.0123456789ab.js")
     assert calls.count("main.0123456789ab.js") == 1  # hashed asset served from cache
     assert c.get("/neuroglancer/missing.js").status_code == 404 and c.get("/neuroglancer/%2e%2e/x").status_code in (400, 404)

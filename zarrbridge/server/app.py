@@ -75,7 +75,7 @@ class ViewerProxy:
                                                                           "User-Agent": "zarrbridge"})
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
-                return r.status, r.read(), {k: v for k, v in r.headers.items() if k.lower() in self.FORWARD}
+                return r.status, r.read(), {k.lower(): v for k, v in r.headers.items() if k.lower() in self.FORWARD}
         except urllib.error.HTTPError as e:
             return e.code, b"", {}
 
@@ -95,7 +95,7 @@ class ViewerProxy:
             if status == 200:
                 self._cache[path] = (time.time(), status, body, headers)
         if hashed:
-            headers = dict(headers, **{"Cache-Control": "public, max-age=31536000, immutable"})
+            headers = dict(headers, **{"cache-control": "public, max-age=31536000, immutable"})
         return Response(body, status_code=status, headers=headers)
 
 
