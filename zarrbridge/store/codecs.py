@@ -34,8 +34,14 @@ def codec_names(array_meta: dict) -> list[str]:
     return [c["name"] if isinstance(c, dict) else str(c) for c in array_meta.get("codecs", [])]
 
 
-def needs_transcode(array_meta: dict, allowlist: frozenset[str] = ALLOWLIST) -> bool:
-    return array_meta.get("node_type") == "array" and any(n not in allowlist for n in codec_names(array_meta))
+DTYPE_MAP: dict[str, str] = {"float64": "float32", "float16": "float32"}
+
+
+def needs_transcode(array_meta: dict, allowlist: frozenset[str] = ALLOWLIST, dtype_map: dict[str, str] | None = None) -> bool:
+    if array_meta.get("node_type") != "array":
+        return False
+    dmap = DTYPE_MAP if dtype_map is None else dtype_map
+    return any(n not in allowlist for n in codec_names(array_meta)) or array_meta.get("data_type") in dmap
 
 
 def pad_chunk(arr: np.ndarray, chunk_shape: tuple[int, ...]) -> np.ndarray:

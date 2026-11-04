@@ -11,21 +11,25 @@ from zarr.core.buffer import Buffer, BufferPrototype, default_buffer_prototype
 from zarr.storage import WrapperStore
 
 from zarrbridge.store.chunkstore import apply_range
-from zarrbridge.store.codecs import ALLOWLIST, OUTPUT_CODECS, decode_chunk, encode_chunk, needs_transcode
+import numpy as np
+
+from zarrbridge.store.codecs import ALLOWLIST, DTYPE_MAP, OUTPUT_CODECS, decode_chunk, encode_chunk, needs_transcode
 from zarrbridge.store.keys import is_metadata_key, split_chunk_key
 
 
 class TranscodeStore(WrapperStore):
     def __init__(self, store: Store, allowlist: frozenset[str] = ALLOWLIST,
-                 output_codecs: list[dict] | None = None, max_decodes: int | None = None) -> None:
+                 output_codecs: list[dict] | None = None, max_decodes: int | None = None,
+                 dtype_map: dict[str, str] | None = None) -> None:
         super().__init__(store)
         self.allowlist = frozenset(allowlist)
         self.output_codecs = output_codecs or OUTPUT_CODECS
+        self.dtype_map = dict(DTYPE_MAP if dtype_map is None else dtype_map)
         self._meta: dict[str, dict | None] = {}  # array path -> original metadata if transcoded, else None
         self._sem = asyncio.Semaphore(max_decodes or os.cpu_count() or 1)
 
     def _with_store(self, store):
-        return type(self)(store, self.allowlist, self.output_codecs)
+        return type(self)(store, self.allowlist, self.output_codecs, dtype_map=self.dtype_map)
 
     def __eq__(self, other: object) -> bool:
         return self is other
@@ -49,7 +53,7 @@ class TranscodeStore(WrapperStore):
         if buf is not None:
             try:
                 m = json.loads(buf.to_bytes())
-                meta = m if needs_transcode(m, self.allowlist) else None
+                meta = m if needs_transcode(m, self.allowlist, self.dtype_map) else None
             except ValueError:
                 meta = None
         self._meta[array_path] = meta
@@ -62,6 +66,13 @@ class TranscodeStore(WrapperStore):
             if meta is None:
                 return await self._store.get(key, prototype, byte_range)
             out = dict(meta, codecs=self.output_codecs)
+            target = self.dtype_map.get(meta.get("data_type"))
+            if target:
+                out["data_type"] = target
+                try:
+                    out["fill_value"] = np.dtype(target).type(meta.get("fill_value", 0)).item()
+                except (TypeError, ValueError):
+                    out["fill_value"] = 0
             return prototype.buffer.from_bytes(apply_range(json.dumps(out, indent=2).encode(), byte_range))
         split = split_chunk_key(key)
         if split is None:
@@ -77,7 +88,11 @@ class TranscodeStore(WrapperStore):
         return prototype.buffer.from_bytes(apply_range(data, byte_range))
 
     def _transcode(self, data: bytes, meta: dict) -> bytes:
-        return encode_chunk(decode_chunk(data, meta), self.output_codecs)
+        arr = decode_chunk(data, meta)
+        target = self.dtype_map.get(meta.get("data_type"))
+        if target:
+            arr = arr.astype(np.dtype(target))  # lossy for float64 -> float32; the viewer cannot render the original
+        return encode_chunk(arr, self.output_codecs)
 
     async def get_partial_values(self, prototype: BufferPrototype,
                                  key_ranges: Iterable[tuple[str, ByteRequest | None]]) -> list[Buffer | None]:

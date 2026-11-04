@@ -4,7 +4,7 @@ import numpy as np
 import zarr
 from zarr.core.buffer import default_buffer_prototype
 
-from tests.conftest import make_tiff, stack_u16
+from tests.conftest import get as get_sync, make_tiff, stack_u16
 from zarrbridge.readers.refkv_reader import RefkvReader
 from zarrbridge.store.transcode import TranscodeStore
 
@@ -34,3 +34,17 @@ def test_transcode_zarr_roundtrip(tmp_path, cfg):
     op = RefkvReader().open(make_tiff(tmp_path / "a.ome.tif", a, ome=True, metadata={"axes": "ZYX"},
                                       compression="lzw", rowsperstrip=32), cfg)
     assert np.array_equal(zarr.open_group(TranscodeStore(op.store), mode="r")["0"][:], a)
+
+
+def test_float64_served_as_float32(tmp_path, cfg_min4):
+    cfg = cfg_min4
+    from zarrbridge.dataset import Dataset
+    a = (np.random.default_rng(0).random((4, 40, 50)) * 1000).astype("<f8")
+    p = make_tiff(tmp_path / "f64.tif", a, compression="zlib", rowsperstrip=16)
+    ds = Dataset.open(p, cfg)
+    meta = json.loads(get_sync(ds.store, "0/zarr.json"))
+    assert meta["data_type"] == "float32" and [c["name"] for c in meta["codecs"]] == ["bytes", "zstd"]
+    got = zarr.open_group(ds.store, mode="r")["0"][:]
+    assert got.dtype == np.float32 and np.array_equal(got, a.astype(np.float32))
+    assert ds.source_of("0/c/0/0/0") == "transcoded"
+    assert ds.ensure_pyramid("now") == 0 and zarr.open_group(ds.store, mode="r")["1"].dtype == np.float32

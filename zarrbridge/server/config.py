@@ -93,6 +93,12 @@ class ReadersConfig:
 
 
 @dataclass
+class TranscodeConfig:
+    # dtypes viewers cannot render -> what to serve instead (Neuroglancer has no float64/float16/int64)
+    dtype_map: dict[str, str] = field(default_factory=lambda: {"float64": "float32", "float16": "float32"})
+
+
+@dataclass
 class LimitsConfig:
     max_open_datasets: int = 64
     chunk_cache_bytes: int = 256 * 2**20
@@ -112,6 +118,7 @@ class Config:
     build: BuildConfig = field(default_factory=BuildConfig)
     readers: ReadersConfig = field(default_factory=ReadersConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
+    transcode: TranscodeConfig = field(default_factory=TranscodeConfig)
 
     @classmethod
     def load(cls, file: Path | str | None = None, env: Mapping[str, str] | None = None,

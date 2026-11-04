@@ -47,3 +47,7 @@ max_open_datasets = 64
 chunk_cache_bytes = "256MiB"
 max_decodes = 0            # 0 -> os.cpu_count()
 max_chunk_bytes = "64MiB"
+
+[transcode]
+# dtypes viewers cannot render -> what to serve (and build) instead. Lossy for float64.
+dtype_map = { float64 = "float32", float16 = "float32" }

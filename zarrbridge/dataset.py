@@ -40,7 +40,7 @@ class Dataset:
         self.opened_at = time.time()
         self.last_used = time.time()
         images = [i.path for i in opened.images]
-        self.transcode = TranscodeStore(opened.store, max_decodes=config.max_decodes())
+        self.transcode = TranscodeStore(opened.store, max_decodes=config.max_decodes(), dtype_map=config.transcode.dtype_map)
         self._native_levels = {i.path: len(i.levels) for i in opened.images}
         self.overlay = PyramidOverlay(self.transcode, cache_dir, self._routes_to_cache)
         self.store = MetadataStore(self.overlay, cache_dir, images, lambda: self.validity == "valid", self._native_reason)
