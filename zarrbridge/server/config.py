@@ -41,7 +41,7 @@ class ServerConfig:
     index_html: str = ""  # path of an HTML file to serve at / instead of the root listing
     ssl_certfile: str = ""  # HTTPS (needed when viewers are served over https, which blocks mixed content)
     ssl_keyfile: str = ""
-    viewer: bool = True  # serve the Neuroglancer client at /neuroglancer/ when the `viewer` extra is installed
+    viewer_dir: str = ""  # a standalone Neuroglancer client build (dist/client) to serve at /neuroglancer/
 
 
 @dataclass

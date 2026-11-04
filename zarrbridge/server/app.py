@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -53,14 +54,11 @@ def create_app(config: Config) -> Starlette:
     return app
 
 
-def viewer_static_dir() -> Path | None:
-    """The bundled Neuroglancer client, when the `viewer` extra is installed."""
-    try:
-        import importlib.resources as r
-        d = Path(str(r.files("neuroglancer") / "static" / "client"))
-        return d if (d / "index.html").exists() else None
-    except Exception:  # noqa: BLE001
-        return None
+def viewer_static_dir(config: Config) -> Path | None:
+    """A standalone Neuroglancer client build to serve at /neuroglancer/ (same origin: no CORS, no Chrome
+    Local Network Access permission). The pip `neuroglancer` package's client is not standalone."""
+    d = Path(os.path.expanduser(config.server.viewer_dir)) if config.server.viewer_dir else None
+    return d if d and (d / "index.html").exists() else None
 
 
 def _middleware(config: Config) -> list[Middleware]:
@@ -164,7 +162,7 @@ def _routes(config: Config, resolver: DatasetResolver, queue: AutoBuildQueue | N
         return HTMLResponse(browse.render_roots(config.roots))
 
     routes = [Route("/_health", health)]
-    viewer_dir = viewer_static_dir() if config.server.viewer and not trusted else None
+    viewer_dir = viewer_static_dir(config) if not trusted else None
     if viewer_dir is not None:
         from starlette.staticfiles import StaticFiles
         routes.append(Mount("/neuroglancer", app=StaticFiles(directory=str(viewer_dir), html=True), name="neuroglancer"))
@@ -249,7 +247,7 @@ def _browse(request: Request, config: Config, resolver: DatasetResolver) -> Resp
     if any(s in (".", "..") for s in rel.split("/")) or not resolver._contained(target, base) or not target.is_dir():
         return Response(status_code=404)
     base_url = f"{request.url.scheme}://{request.url.netloc}"
-    viewer = f"{base_url}/neuroglancer/" if (config.server.viewer and viewer_static_dir()) else None
+    viewer = f"{base_url}/neuroglancer/" if viewer_static_dir(config) else None
     return HTMLResponse(browse.render_listing(root, rel, target, base_url, viewer))
 
 

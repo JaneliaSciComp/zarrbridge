@@ -17,7 +17,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-viewer = ["neuroglancer>=2.40"]  # same-origin Neuroglancer client at /neuroglancer/ (avoids Chrome Local Network Access prompts)
 test = ["pytest", "httpx", "mrcfile", "ome-zarr-models>=1.8", "pytest-asyncio", "fsspec", "aiohttp", "requests"]
 
 [project.scripts]
@@ -46,7 +45,7 @@ python = "3.12.*"
 pip = "*"
 
 [tool.pixi.pypi-dependencies]
-zarrbridge = { path = ".", editable = true, extras = ["viewer"] }
+zarrbridge = { path = ".", editable = true }
 
 [tool.pixi.tasks]
 serve = "zarrbridge serve"
@@ -57,7 +56,7 @@ dev-launch = { cmd = "zarrbridge -v serve --port 8800 --cors-origin '*' --browse
 demo = { cmd = "python demo/run.py", description = "download public samples of every format (once) and serve them on 0.0.0.0 with an index page" }
 
 [tool.pixi.feature.test.pypi-dependencies]
-zarrbridge = { path = ".", editable = true, extras = ["test", "viewer"] }
+zarrbridge = { path = ".", editable = true, extras = ["test"] }
 
 [tool.pixi.feature.test.tasks]
 test = "python -m pytest -q"

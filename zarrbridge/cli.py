@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--immutable-chunks", action="store_true", default=None)
     s.add_argument("--follow-symlinks", action="store_true", default=None)
     s.add_argument("--ssl-certfile"); s.add_argument("--ssl-keyfile")
+    s.add_argument("--viewer-dir", help="standalone Neuroglancer client build (dist/client) to serve at /neuroglancer/")
 
     b = sub.add_parser("build", help="build the multiscale cache for a file or every servable file in a dir")
     b.add_argument("target", type=Path)
@@ -91,7 +92,7 @@ def _config(args: argparse.Namespace) -> Config:
         if roots:
             ov["roots"] = roots
         for k in ("host", "port", "uds", "token", "insecure", "browse", "trusted_path_header", "immutable_chunks", "follow_symlinks",
-                  "ssl_certfile", "ssl_keyfile"):
+                  "ssl_certfile", "ssl_keyfile", "viewer_dir"):
             v = getattr(args, k)
             if v is not None and v is not False or (k == "insecure" and v):
                 ov["server"][k] = v

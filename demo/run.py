@@ -127,7 +127,7 @@ def ng_link(url: str, name: str, viewer_base: str | None) -> str:
 def write_index(data: Path, base_url: str, root: str, config) -> Path:
     from zarrbridge.dataset import Dataset
     from zarrbridge.server.app import viewer_static_dir
-    viewer_base = f"{base_url}/neuroglancer/" if viewer_static_dir() else None
+    viewer_base = f"{base_url}/neuroglancer/" if viewer_static_dir(config) else None
     from zarrbridge.readers.base import ReaderRejected
     from zarrbridge.readers.registry import sniffable
     rows = []
@@ -165,8 +165,8 @@ td,th{{border-bottom:1px solid #ddd;padding:.5em;vertical-align:top;text-align:l
 <p>Public sample files in every supported format, served live as OME-Zarr 0.5 at <code>{html.escape(base_url)}/{root}/&lt;file&gt;/</code>.
 Nothing was converted: each chunk is read from the original file on request. Multiscale levels are built in the background
 on first open; reload a <em>status</em> link to watch <code>levels.state</code> go <code>native → building → multiscale</code>.
-Neuroglancer links open the client bundled with this server (same origin). vizarr links open the hosted
-hms-dbmi.github.io page: on a private network Chrome asks permission for that site to reach this server; allow it once.
+Neuroglancer links open a client served from this origin, so no cross-site permission is needed. vizarr links open the
+hosted hms-dbmi.github.io page: on a private network Chrome asks permission for that site to reach this server; allow it once.
 <a href="{base_url}/{root}/">Directory listing</a> · <a href="{base_url}/_health">health</a></p>
 <table><tr><th>file</th><th>reader · classification · images</th><th>open</th></tr>{''.join(rows)}</table></body></html>"""
     out = data / "index.html"
@@ -182,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fetch-only", action="store_true")
     ap.add_argument("--no-fetch", action="store_true")
     ap.add_argument("--access-log", action="store_true", help="JSON access log on stderr (one line per request)")
+    ap.add_argument("--viewer-dir", default=os.environ.get("ZB_VIEWER_DIR", ""),
+                    help="standalone Neuroglancer client build (neuroglancer/dist/client) served at /neuroglancer/")
     ap.add_argument("--ssl-certfile", default=os.environ.get("ZB_SSL_CERTFILE", "/opt/certs/cert.crt" if Path("/opt/certs/cert.crt").exists() else ""))
     ap.add_argument("--ssl-keyfile", default=os.environ.get("ZB_SSL_KEYFILE", "/opt/certs/cert.key" if Path("/opt/certs/cert.key").exists() else ""))
     args = ap.parse_args(argv)
@@ -199,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     config = Config.load(env={}, overrides={"roots": {root: str(data)},
                                             "server": {"host": "0.0.0.0", "port": port, "insecure": True, "cors_origins": ["*"]},
                                             "build": {"auto": True, "slots": 2}})
+    config.server.viewer_dir = args.viewer_dir
     index = write_index(data, base_url, root, config)
     config.server.index_html = str(index)
     print(f"\nzarrbridge demo: {base_url}/\n", flush=True)

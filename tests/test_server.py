@@ -95,9 +95,10 @@ def test_browse_lists_files(tmp_path):
     from urllib.parse import unquote
     state = _json.loads(unquote(re.search(r'(?:neuroglancer-demo\.appspot\.com/|/neuroglancer/)#!([^"]+)"', html).group(1)))
     assert state["layers"][0]["tab"] == "rendering" and state["selectedLayer"] == {"visible": True, "layer": "a.mrc"}
-    from zarrbridge.server.app import viewer_static_dir
-    if viewer_static_dir():
-        assert "/neuroglancer/#!" in html and c.get("/neuroglancer/").status_code == 200
+    vd = tmp_path / "viewer"; vd.mkdir(); (vd / "index.html").write_text("<html>ng</html>")
+    c2 = TestClient(create_app(cfg_root("d", tmp_path / "d", server__viewer_dir=str(vd))))
+    html2 = c2.get("/d/sub/").text
+    assert "/neuroglancer/#!" in html2 and c2.get("/neuroglancer/").text == "<html>ng</html>"
     r = c.options("/d/sub/a.mrc/zarr.json", headers={"Origin": "http://x", "Access-Control-Request-Method": "GET",
                                                     "Access-Control-Request-Private-Network": "true"})
     assert r.status_code in (200, 204) and r.headers.get("access-control-allow-private-network") == "true"
