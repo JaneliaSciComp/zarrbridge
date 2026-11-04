@@ -154,7 +154,9 @@ def write_index(data: Path, base_url: str, root: str, config) -> Path:
                 label = f"image {i['path']}: " if i["path"] else ""
                 parts.append(f'{label}<a href="{html.escape(ng_link(ihref, p.name, viewer_base))}" target="_blank">Neuroglancer</a> · '
                              f'<a href="{html.escape(VIZARR + quote(ihref, safe=""))}" target="_blank">vizarr</a> · '
-                             f'<a href="{html.escape(ihref)}/zarr.json">zarr.json</a>')
+                             f'<a href="fiji://open/url?p={html.escape(ihref)}" title="needs Fiji-Latest with the OME-Zarr update site">Fiji</a> · '
+                             f'<a href="{html.escape(ihref)}/zarr.json">zarr.json</a> · '
+                             f'<a href="#" data-copy="{html.escape(ihref)}">copy url</a>')
             links = "<br>".join(parts) + f'<br><a href="{base_url}/_status/{root}/{quote(rel)}">status</a>'
         rows.append(f"<tr><td><code>{html.escape(rel)}</code><br><small>{html.escape(note)} · <a href='{html.escape(url)}'>source</a></small></td>"
                     f"<td>{html.escape(state)}<br><small>{html.escape(imgs)}</small></td><td>{links}</td></tr>")
@@ -167,8 +169,11 @@ Nothing was converted: each chunk is read from the original file on request. Mul
 on first open; reload a <em>status</em> link to watch <code>levels.state</code> go <code>native → building → multiscale</code>.
 Neuroglancer links open the viewer through this origin (a passthrough to neuroglancer-demo.appspot.com, or a build on disk), so no cross-site permission is needed. vizarr links open the
 hosted hms-dbmi.github.io page: on a private network Chrome asks permission for that site to reach this server; allow it once.
+Fiji links use the <a href="https://github.com/BioImageTools/ome-zarr-fiji-java">fiji://</a> handler (Fiji-Latest with the OME-Zarr update site). <em>copy url</em> copies the image's OME-Zarr URL to paste anywhere.
 <a href="{base_url}/{root}/">Directory listing</a> · <a href="{base_url}/_health">health</a></p>
-<table><tr><th>file</th><th>reader · classification · images</th><th>open</th></tr>{''.join(rows)}</table></body></html>"""
+<table><tr><th>file</th><th>reader · classification · images</th><th>open</th></tr>{''.join(rows)}</table>
+<script>document.addEventListener('click',e=>{{const a=e.target.closest('a[data-copy]');if(!a)return;e.preventDefault();
+navigator.clipboard.writeText(a.dataset.copy).then(()=>{{const t=a.textContent;a.textContent='copied';setTimeout(()=>a.textContent=t,1200);}});}});</script></body></html>"""
     out = data / "index.html"
     out.write_text(page)
     return out
