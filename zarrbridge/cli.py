@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--follow-symlinks", action="store_true", default=None)
     s.add_argument("--ssl-certfile"); s.add_argument("--ssl-keyfile")
     s.add_argument("--viewer-dir", help="standalone Neuroglancer client build (dist/client) to serve at /neuroglancer/")
+    s.add_argument("--viewer-url", help="hosted Neuroglancer to pass through at /neuroglancer/ (default neuroglancer-demo.appspot.com; '' disables)")
 
     b = sub.add_parser("build", help="build the multiscale cache for a file or every servable file in a dir")
     b.add_argument("target", type=Path)
@@ -96,6 +97,8 @@ def _config(args: argparse.Namespace) -> Config:
             v = getattr(args, k)
             if v is not None and v is not False or (k == "insecure" and v):
                 ov["server"][k] = v
+        if args.viewer_url is not None:
+            ov["server"]["viewer_url"] = args.viewer_url
         if args.cors_origin is not None:
             ov["server"]["cors_origins"] = args.cors_origin
         if args.allow_prefix is not None:

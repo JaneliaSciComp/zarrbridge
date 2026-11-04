@@ -126,8 +126,8 @@ def ng_link(url: str, name: str, viewer_base: str | None) -> str:
 
 def write_index(data: Path, base_url: str, root: str, config) -> Path:
     from zarrbridge.dataset import Dataset
-    from zarrbridge.server.app import viewer_static_dir
-    viewer_base = f"{base_url}/neuroglancer/" if viewer_static_dir(config) else None
+    from zarrbridge.server.app import has_viewer
+    viewer_base = f"{base_url}/neuroglancer/" if has_viewer(config) else None
     from zarrbridge.readers.base import ReaderRejected
     from zarrbridge.readers.registry import sniffable
     rows = []
@@ -165,7 +165,7 @@ td,th{{border-bottom:1px solid #ddd;padding:.5em;vertical-align:top;text-align:l
 <p>Public sample files in every supported format, served live as OME-Zarr 0.5 at <code>{html.escape(base_url)}/{root}/&lt;file&gt;/</code>.
 Nothing was converted: each chunk is read from the original file on request. Multiscale levels are built in the background
 on first open; reload a <em>status</em> link to watch <code>levels.state</code> go <code>native → building → multiscale</code>.
-Neuroglancer links open a client served from this origin, so no cross-site permission is needed. vizarr links open the
+Neuroglancer links open the viewer through this origin (a passthrough to neuroglancer-demo.appspot.com, or a build on disk), so no cross-site permission is needed. vizarr links open the
 hosted hms-dbmi.github.io page: on a private network Chrome asks permission for that site to reach this server; allow it once.
 <a href="{base_url}/{root}/">Directory listing</a> · <a href="{base_url}/_health">health</a></p>
 <table><tr><th>file</th><th>reader · classification · images</th><th>open</th></tr>{''.join(rows)}</table></body></html>"""

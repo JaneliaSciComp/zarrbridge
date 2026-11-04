@@ -137,3 +137,29 @@ def test_neuroglancer_state_is_auto_layer():
     st = neuroglancer_state("https://h/x.tif", "x.tif")
     assert st["layers"] == [{"type": "auto", "source": "zarr3://https://h/x.tif", "name": "x.tif", "tab": "rendering"}]
     assert st["selectedLayer"] == {"visible": True, "layer": "x.tif"}
+
+
+def test_viewer_passthrough(tmp_path, monkeypatch):
+    from zarrbridge.server import app as appmod
+    calls = []
+
+    def fake_fetch(self, path):
+        calls.append(path)
+        if path == "index.html":
+            return 200, b"<title>neuroglancer</title>", {"Content-Type": "text/html"}
+        if path == "main.0123456789ab.js":
+            return 200, b"js", {"Content-Type": "application/javascript"}
+        return 404, b"", {}
+    monkeypatch.setattr(appmod.ViewerProxy, "fetch", fake_fetch)
+    make_mrc(tmp_path / "d" / "a.mrc", (8, 8, 8))
+    c = TestClient(create_app(cfg_root("d", tmp_path / "d")))
+    assert c.get("/neuroglancer", follow_redirects=False).status_code == 307
+    assert c.get("/neuroglancer/").text == "<title>neuroglancer</title>"
+    r = c.get("/neuroglancer/main.0123456789ab.js")
+    assert r.text == "js" and r.headers["cache-control"].startswith("public, max-age=31536000")
+    c.get("/neuroglancer/main.0123456789ab.js")
+    assert calls.count("main.0123456789ab.js") == 1  # hashed asset served from cache
+    assert c.get("/neuroglancer/missing.js").status_code == 404 and c.get("/neuroglancer/%2e%2e/x").status_code in (400, 404)
+    assert "/neuroglancer/#!" in c.get("/d/").text
+    off = TestClient(create_app(cfg_root("d", tmp_path / "d", server__viewer_url="")))
+    assert off.get("/neuroglancer/").status_code == 404 and "neuroglancer-demo.appspot.com/#!" in off.get("/d/").text

@@ -1,10 +1,12 @@
 """ASGI app (spec §8). The store stack does the work; this layer adds routing, headers, auth and logging."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -54,11 +56,58 @@ def create_app(config: Config) -> Starlette:
     return app
 
 
+class ViewerProxy:
+    """GET passthrough for a hosted Neuroglancer (fileglancer's dev approach). Buffers each response; assets
+    with a content hash in the name are cached for the process lifetime, index.html for `ttl` seconds."""
+
+    FORWARD = ("content-type", "cache-control", "etag", "last-modified")
+
+    def __init__(self, upstream: str, ttl: float = 300.0) -> None:
+        self.upstream = upstream.rstrip("/")
+        self.ttl = ttl
+        self._cache: dict[str, tuple[float, int, bytes, dict[str, str]]] = {}
+
+    def fetch(self, path: str) -> tuple[int, bytes, dict[str, str]]:
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(f"{self.upstream}/{path}", headers={"Accept-Encoding": "identity",
+                                                                          "User-Agent": "zarrbridge"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read(), {k: v for k, v in r.headers.items() if k.lower() in self.FORWARD}
+        except urllib.error.HTTPError as e:
+            return e.code, b"", {}
+
+    async def handle(self, request: Request) -> Response:
+        path = request.path_params.get("path", "") or "index.html"
+        if any(seg in ("..", ".") for seg in path.split("/")) or any(c in path for c in "?#%"):
+            return Response(status_code=400)
+        hashed = bool(re.search(r"\.[0-9a-f]{8,}\.", path))
+        hit = self._cache.get(path)
+        if hit and (hashed or time.time() - hit[0] < self.ttl):
+            _, status, body, headers = hit
+        else:
+            try:
+                status, body, headers = await asyncio.to_thread(self.fetch, path)
+            except OSError as e:
+                return PlainTextResponse(f"could not reach {self.upstream}: {e}", status_code=502)
+            if status == 200:
+                self._cache[path] = (time.time(), status, body, headers)
+        if hashed:
+            headers = dict(headers, **{"Cache-Control": "public, max-age=31536000, immutable"})
+        return Response(body, status_code=status, headers=headers)
+
+
 def viewer_static_dir(config: Config) -> Path | None:
     """A standalone Neuroglancer client build to serve at /neuroglancer/ (same origin: no CORS, no Chrome
     Local Network Access permission). The pip `neuroglancer` package's client is not standalone."""
     d = Path(os.path.expanduser(config.server.viewer_dir)) if config.server.viewer_dir else None
     return d if d and (d / "index.html").exists() else None
+
+
+def has_viewer(config: Config) -> bool:
+    """Whether /neuroglancer/ is served on this origin (a build on disk or a passthrough to viewer_url)."""
+    return bool(config.server.trusted_path_header) is False and (viewer_static_dir(config) is not None or bool(config.server.viewer_url))
 
 
 def _middleware(config: Config) -> list[Middleware]:
@@ -166,6 +215,11 @@ def _routes(config: Config, resolver: DatasetResolver, queue: AutoBuildQueue | N
     if viewer_dir is not None:
         from starlette.staticfiles import StaticFiles
         routes.append(Mount("/neuroglancer", app=StaticFiles(directory=str(viewer_dir), html=True), name="neuroglancer"))
+    elif has_viewer(config):
+        from starlette.responses import RedirectResponse
+        proxy = ViewerProxy(config.server.viewer_url)
+        routes.append(Route("/neuroglancer", lambda r: RedirectResponse("/neuroglancer/")))  # NG asset URLs are relative
+        routes.append(Route("/neuroglancer/{path:path}", proxy.handle))
     if trusted:
         routes += [Route("/_status", guard(status)),
                    Route("/{key:path}", guard(key_handler), methods=["GET", "HEAD"])]
@@ -247,7 +301,7 @@ def _browse(request: Request, config: Config, resolver: DatasetResolver) -> Resp
     if any(s in (".", "..") for s in rel.split("/")) or not resolver._contained(target, base) or not target.is_dir():
         return Response(status_code=404)
     base_url = f"{request.url.scheme}://{request.url.netloc}"
-    viewer = f"{base_url}/neuroglancer/" if viewer_static_dir(config) else None
+    viewer = f"{base_url}/neuroglancer/" if has_viewer(config) else None
     return HTMLResponse(browse.render_listing(root, rel, target, base_url, viewer))
 
 

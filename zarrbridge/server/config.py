@@ -41,7 +41,10 @@ class ServerConfig:
     index_html: str = ""  # path of an HTML file to serve at / instead of the root listing
     ssl_certfile: str = ""  # HTTPS (needed when viewers are served over https, which blocks mixed content)
     ssl_keyfile: str = ""
-    viewer_dir: str = ""  # a standalone Neuroglancer client build (dist/client) to serve at /neuroglancer/
+    # /neuroglancer/ on this origin (so viewers need no cross-site permission): a client build on disk, else a
+    # GET passthrough to viewer_url (like fileglancer's FGC_NEUROGLANCER_URL); "" disables it.
+    viewer_dir: str = ""
+    viewer_url: str = "https://neuroglancer-demo.appspot.com"
 
 
 @dataclass
