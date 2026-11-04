@@ -48,3 +48,11 @@ def test_float64_served_as_float32(tmp_path, cfg_min4):
     assert got.dtype == np.float32 and np.array_equal(got, a.astype(np.float32))
     assert ds.source_of("0/c/0/0/0") == "transcoded"
     assert ds.ensure_pyramid("now") == 0 and zarr.open_group(ds.store, mode="r")["1"].dtype == np.float32
+
+
+def test_numcodecs_zlib_is_transcoded():
+    # Neuroglancer's zarr3 reader knows gzip/zlib but not numcodecs.zlib (refkv emits it for TIFF deflate).
+    from zarrbridge.store.codecs import needs_transcode
+    meta = {"node_type": "array", "data_type": "uint8",
+            "codecs": [{"name": "bytes"}, {"name": "numcodecs.zlib", "configuration": {"level": 6}}]}
+    assert needs_transcode(meta)

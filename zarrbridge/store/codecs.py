@@ -17,7 +17,7 @@ OUTPUT_CODECS: list[dict] = [
     {"name": "zstd", "configuration": {"level": 3, "checksum": False}},
 ]
 ALLOWLIST: frozenset[str] = frozenset(
-    {"bytes", "gzip", "zstd", "blosc", "crc32c", "transpose", "sharding_indexed", "numcodecs.zlib"}
+    {"bytes", "gzip", "zstd", "blosc", "crc32c", "transpose", "sharding_indexed"}
 )
 _local = threading.local()
 
