@@ -54,6 +54,12 @@ them on `0.0.0.0` at a random port with an index page of Neuroglancer and vizarr
 `/opt/certs/cert.{crt,key}` for HTTPS when present (`--ssl-certfile/--ssl-keyfile` or `ZB_SSL_*` otherwise);
 hosted viewers are HTTPS pages and cannot fetch from a plain-HTTP server. The manifest is `demo/run.py`.
 
+Pass `--viewer-dir /path/to/neuroglancer/dist/client` (a standalone Neuroglancer build: `npm run build` in a
+neuroglancer checkout) to `serve` or the demo and the viewer is served from this origin at `/neuroglancer/`.
+That avoids Chrome's Local Network Access permission prompt, which otherwise blocks the first load from
+neuroglancer-demo.appspot.com against a server on a private address. Links use an `auto` layer, so Neuroglancer
+applies the OME `omero` channel colours and windows itself.
+
 ## How it works
 
 - **Readers** (`zarrbridge/readers/`): `mrc` (64³ cubes over the uncompressed file, port of mrc-ng-server),
