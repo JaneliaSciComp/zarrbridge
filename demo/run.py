@@ -169,7 +169,7 @@ Nothing was converted: each chunk is read from the original file on request. Mul
 on first open; reload a <em>status</em> link to watch <code>levels.state</code> go <code>native → building → multiscale</code>.
 Neuroglancer links open the viewer through this origin (a passthrough to neuroglancer-demo.appspot.com, or a build on disk), so no cross-site permission is needed. vizarr links open the
 hosted hms-dbmi.github.io page: on a private network Chrome asks permission for that site to reach this server; allow it once.
-Fiji links use the <a href="https://github.com/BioImageTools/ome-zarr-fiji-java">fiji://</a> handler (Fiji-Latest with the OME-Zarr update site). <em>copy url</em> copies the image's OME-Zarr URL to paste anywhere.
+Fiji links use the <a href="https://github.com/BioImageTools/ome-zarr-fiji-java">fiji://</a> handler (Fiji-Latest with the OME-Zarr update site); it opens in ImageJ by default, so set Plugins &gt; OME-Zarr &gt; Settings &gt; Opening Behavior to BigDataViewer if you want BDV. <em>copy url</em> copies the image's OME-Zarr URL to paste anywhere.
 <a href="{base_url}/{root}/">Directory listing</a> · <a href="{base_url}/_health">health</a></p>
 <table><tr><th>file</th><th>reader · classification · images</th><th>open</th></tr>{''.join(rows)}</table>
 <script>document.addEventListener('click',e=>{{const a=e.target.closest('a[data-copy]');if(!a)return;e.preventDefault();
