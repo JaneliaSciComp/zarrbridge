@@ -83,6 +83,39 @@ metadata diffs: axes carry `unit: angstrom` with scales in Å (mrc-ng-server use
 `attributes["mrc"]`, an `omero.window` from dmin/dmax is added, and chunks are zstd. `tests/test_parity_mrcng.py`
 runs when a sibling `mrc-ng-server` checkout is importable.
 
+## Inspiration and prior art
+
+zarrbridge is a generalisation of ideas and code from several projects. The original design is in
+`docs/specs/zarrbridge-spec.md`.
+
+- [mrc-ng-server](https://github.com/JaneliaSciComp/mrc-ng-server): the direct ancestor. Its serving rules
+  ("never compute on the request path", "cached info is the authority", "fingerprint or nothing"), the 64³
+  cube read plan for MRC, the streaming pyramid builder, the fingerprint module and the `FdCache` were ported
+  in and applied to every reader instead of one. Parity tests keep the MRC output byte-identical.
+- [refkv](https://github.com/d-v-b/refkv): the indexing layer. refkv zarrifies CZI, ND2, LIF, NDPI, SVS, IMS,
+  DICOM, NIfTI, NRRD, FITS and most TIFFs into reference stores, and its OME-Zarr 0.5 conventions (axes,
+  units, transforms, `omero`, source-metadata mirrors, multi-image hierarchies) are served as emitted. The
+  `.vzip` index persistence and file pins come from it too.
+- [refkv-server](https://github.com/psobolewskiPhD/refkv-server): the thin-server shape. Resolving a URL by
+  the longest prefix that is a regular file, with the remainder as the zarr key, and a browse page that is
+  just a directory listing with viewer links, follow its lead.
+- [zarr-http-server](https://zarr.readthedocs.io/projects/zarr-http-server/en/latest/): the reference for
+  serving a zarr v3 store over HTTP, including its key-validation rules and byte-range handling. zarrbridge's
+  key handler is a small reimplementation of the same contract with header hooks added.
+- [x2s3](https://github.com/JaneliaSciComp/x2s3): the model for a single-process personal data server with
+  several named roots, and for the pixi project layout.
+- [Fileglancer](https://github.com/JaneliaSciComp/fileglancer): the intended host. The unix-socket plus
+  trusted-path-header mode, the status JSON and the out-of-process builder CLI exist so Fileglancer can run
+  zarrbridge as an unprivileged per-user data worker.
+- [chunkmirage](https://github.com/JaneliaSciComp/chunkmirage): a sibling project that serves computed views
+  as if they were stored Zarr, N5 or precomputed datasets. Its stance that nothing needs to exist on disk for a
+  viewer to open it is the same one zarrbridge takes for legacy files.
+- [VirtualiZarr](https://github.com/zarr-developers/VirtualiZarr): the broader virtual-Zarr idea in the
+  geoscience world, where chunk references point into existing files rather than copies. refkv brings the
+  same idea to microscopy formats, and zarrbridge serves the result.
+- [bffile](https://github.com/imaging-formats/bffile): the modern Bio-Formats wrapper. The reader interface
+  is designed so a Bio-Formats reader can slot in behind an optional extra for the long tail of formats.
+
 ## Bumping the derivation version
 
 If a change can alter what a build produces (downsampling, padding, translation convention, level layout,
