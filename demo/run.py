@@ -117,11 +117,20 @@ def free_port() -> int:
     return port
 
 
-def ng_link(url: str, name: str, viewer_base: str | None) -> str:
-    state = {"layers": [{"type": "image", "source": f"zarr3://{url}", "name": name, "tab": "rendering"}],
-             "selectedLayer": {"visible": True, "layer": name}, "layout": "4panel"}
+def ng_link(url: str, name: str, viewer_base: str | None, group_meta: dict | None = None) -> str:
+    from zarrbridge.server.browse import neuroglancer_state
+    state = {**neuroglancer_state(url, name, group_meta), "layout": "4panel"}
     base = f"{viewer_base}#!" if viewer_base else NEUROGLANCER
     return base + quote(json.dumps(state, separators=(",", ":")), safe="")
+
+
+def get_bytes(store, key: str) -> bytes:
+    from zarr.core.buffer import default_buffer_prototype
+    from zarrbridge._sync import run_sync
+    buf = run_sync(store.get(key, default_buffer_prototype()))
+    if buf is None:
+        raise KeyError(key)
+    return buf.to_bytes()
 
 
 def write_index(data: Path, base_url: str, root: str, config) -> Path:
@@ -138,6 +147,16 @@ def write_index(data: Path, base_url: str, root: str, config) -> Path:
         try:
             ds = Dataset.open(p, config)
             st = ds.status()
+            metas = {}
+            for i in st["images"]:
+                key = f"{i['path']}/zarr.json" if i["path"] else "zarr.json"
+                try:
+                    m = json.loads(get_bytes(ds.store, key))
+                    if "c" in i["axes"]:
+                        m["zarrbridge_shape"] = {"c": i["shape"][i["axes"].index("c")]}
+                    metas[i["path"]] = m
+                except Exception:  # noqa: BLE001
+                    metas[i["path"]] = None
             ds.close()
             imgs = "; ".join(f"{i['path'] or '/'} {i['shape']} {i['dtype']} {''.join(i['axes'])} chunks {i['native_chunks']}" for i in st["images"])
             state = f"{st['reader']} · {st['classification']}" + (f" · {', '.join(st['advice'])}" if st["advice"] else "")
@@ -152,7 +171,7 @@ def write_index(data: Path, base_url: str, root: str, config) -> Path:
             for i in st["images"]:
                 ihref = f"{href}/{quote(i['path'])}" if i["path"] else href
                 label = f"image {i['path']}: " if i["path"] else ""
-                parts.append(f'{label}<a href="{html.escape(ng_link(ihref, p.name, viewer_base))}" target="_blank">Neuroglancer</a> · '
+                parts.append(f'{label}<a href="{html.escape(ng_link(ihref, p.name, viewer_base, metas.get(i["path"])))}" target="_blank">Neuroglancer</a> · '
                              f'<a href="{html.escape(VIZARR + quote(ihref, safe=""))}" target="_blank">vizarr</a> · '
                              f'<a href="{html.escape(ihref)}/zarr.json">zarr.json</a>')
             links = "<br>".join(parts) + f'<br><a href="{base_url}/_status/{root}/{quote(rel)}">status</a>'

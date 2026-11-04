@@ -130,3 +130,18 @@ def test_zarr_python_over_http(tmp_path):
     finally:
         server.should_exit = True
         t.join(timeout=5)
+
+
+def test_neuroglancer_state_colours_channels():
+    from zarrbridge.server.browse import neuroglancer_state
+    meta = {"attributes": {"ome": {"multiscales": [{"axes": [{"name": "c"}, {"name": "y"}, {"name": "x"}]}],
+                                   "omero": {"channels": [{"label": "DAPI", "color": "0000FF", "window": {"min": 0, "max": 65535, "start": 100, "end": 4000}},
+                                                          {"label": "GFP", "color": "00FF00", "active": False}]}}}}
+    st = neuroglancer_state("https://h/x.tif", "x.tif", meta)
+    assert [l["name"] for l in st["layers"]] == ["DAPI", "GFP"]
+    assert st["layers"][0]["localPosition"] == [0] and st["layers"][0]["localDimensions"] == {"c'": [1, ""]}
+    assert st["layers"][0]["shaderControls"] == {"color": "#0000FF", "contrast": {"range": [100, 4000], "window": [0, 65535]}}
+    assert st["layers"][1].get("archived") is True and st["layers"][0]["blend"] == "additive"
+    rgb = {"attributes": {"ome": {"multiscales": [{"axes": [{"name": "c"}, {"name": "y"}, {"name": "x"}]}]}}, "zarrbridge_shape": {"c": 3}}
+    assert [l["shaderControls"]["color"] for l in neuroglancer_state("u", "n", rgb)["layers"]] == ["#ff0000", "#00ff00", "#0000ff"]
+    assert len(neuroglancer_state("u", "n", None)["layers"]) == 1
