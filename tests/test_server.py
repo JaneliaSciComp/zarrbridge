@@ -87,14 +87,20 @@ def test_symlink_escape_404(tmp_path):
 
 def test_browse_lists_files(tmp_path):
     make_mrc(tmp_path / "d" / "sub" / "a.mrc", (8, 8, 8))
-    c = TestClient(create_app(cfg_root("d", tmp_path / "d")))
+    c = TestClient(create_app(cfg_root("d", tmp_path / "d", server__cors_origins=["*"])))
     assert "d/" in c.get("/").text
     html = c.get("/d/sub/").text
-    assert "a.mrc" in html and "neuroglancer-demo" in html and "vizarr" in html
+    assert "a.mrc" in html and ("neuroglancer-demo" in html or "/neuroglancer/#!" in html) and "vizarr" in html
     import re, json as _json
     from urllib.parse import unquote
-    state = _json.loads(unquote(re.search(r'neuroglancer-demo\.appspot\.com/#!([^"]+)"', html).group(1)))
+    state = _json.loads(unquote(re.search(r'(?:neuroglancer-demo\.appspot\.com/|/neuroglancer/)#!([^"]+)"', html).group(1)))
     assert state["layers"][0]["tab"] == "rendering" and state["selectedLayer"] == {"visible": True, "layer": "a.mrc"}
+    from zarrbridge.server.app import viewer_static_dir
+    if viewer_static_dir():
+        assert "/neuroglancer/#!" in html and c.get("/neuroglancer/").status_code == 200
+    r = c.options("/d/sub/a.mrc/zarr.json", headers={"Origin": "http://x", "Access-Control-Request-Method": "GET",
+                                                    "Access-Control-Request-Private-Network": "true"})
+    assert r.status_code in (200, 204) and r.headers.get("access-control-allow-private-network") == "true"
     assert c.get("/d/sub/a.mrc", follow_redirects=False).status_code == 302
     assert c.get("/d/missing/").status_code == 404
 

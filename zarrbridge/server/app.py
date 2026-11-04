@@ -13,7 +13,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteRequest
 from zarr.core.buffer import default_buffer_prototype
 
@@ -53,10 +53,23 @@ def create_app(config: Config) -> Starlette:
     return app
 
 
+def viewer_static_dir() -> Path | None:
+    """The bundled Neuroglancer client, when the `viewer` extra is installed."""
+    try:
+        import importlib.resources as r
+        d = Path(str(r.files("neuroglancer") / "static" / "client"))
+        return d if (d / "index.html").exists() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _middleware(config: Config) -> list[Middleware]:
     mw: list[Middleware] = []
     if config.server.cors_origins:
+        # allow_private_network: a public page (neuroglancer-demo, vizarr) fetching from a private address sends a
+        # Private Network Access preflight; without this Chrome blocks the request outright.
         mw.append(Middleware(CORSMiddleware, allow_origins=config.server.cors_origins, allow_methods=["GET", "HEAD"],
+                             allow_private_network=True,
                              allow_headers=["Range", "If-None-Match", "Authorization", config.server.trusted_path_header or "X-Zarrbridge-Path"],
                              expose_headers=EXPOSE, max_age=3600))
     return mw
@@ -151,6 +164,10 @@ def _routes(config: Config, resolver: DatasetResolver, queue: AutoBuildQueue | N
         return HTMLResponse(browse.render_roots(config.roots))
 
     routes = [Route("/_health", health)]
+    viewer_dir = viewer_static_dir() if config.server.viewer and not trusted else None
+    if viewer_dir is not None:
+        from starlette.staticfiles import StaticFiles
+        routes.append(Mount("/neuroglancer", app=StaticFiles(directory=str(viewer_dir), html=True), name="neuroglancer"))
     if trusted:
         routes += [Route("/_status", guard(status)),
                    Route("/{key:path}", guard(key_handler), methods=["GET", "HEAD"])]
@@ -232,7 +249,8 @@ def _browse(request: Request, config: Config, resolver: DatasetResolver) -> Resp
     if any(s in (".", "..") for s in rel.split("/")) or not resolver._contained(target, base) or not target.is_dir():
         return Response(status_code=404)
     base_url = f"{request.url.scheme}://{request.url.netloc}"
-    return HTMLResponse(browse.render_listing(root, rel, target, base_url))
+    viewer = f"{base_url}/neuroglancer/" if (config.server.viewer and viewer_static_dir()) else None
+    return HTMLResponse(browse.render_listing(root, rel, target, base_url, viewer))
 
 
 def _redirect_to_listing(request: Request, path: Path) -> Response:
