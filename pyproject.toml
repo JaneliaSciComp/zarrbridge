@@ -1,6 +1,6 @@
 [project]
 name = "zarrbridge"
-version = "0.1.0"
+version = "0.1.1"
 description = "Virtual OME-Zarr 0.5 serving for legacy image files (MRC, TIFF, and everything refkv parses)"
 readme = "README.md"
 license = "BSD-3-Clause"
