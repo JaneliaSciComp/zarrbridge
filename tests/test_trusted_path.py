@@ -18,5 +18,9 @@ def test_trusted_path_mode(tmp_path):
     assert c.get("/zarr.json", headers={"X-Fg-Resolved-Path": "/etc/passwd"}).status_code == 403
     assert c.get("/zarr.json", headers={"X-Fg-Resolved-Path": str(tmp_path / "missing.mrc")}).status_code == 404
     assert c.get("/_status", headers=H).json()["reader"] == "mrc"
+    # Non-ASCII paths arrive percent-encoded (header values are ASCII).
+    from urllib.parse import quote
+    q = make_mrc(tmp_path / "échantillon 100%.mrc", (16, 16, 16))
+    assert c.get("/zarr.json", headers={"X-Fg-Resolved-Path": quote(str(q), safe="/")}).status_code == 200
     assert c.get("/_status").status_code == 400
     assert c.get("/_health").json()["mode"] == "trusted-path"

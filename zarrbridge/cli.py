@@ -35,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("paths", nargs="*", type=Path, help="directories to serve (root name = basename)")
     s.add_argument("--root", action="append", default=[], metavar="NAME=PATH")
     s.add_argument("--host"); s.add_argument("--port", type=int); s.add_argument("--uds")
+    s.add_argument("--fd", type=int, help="serve on an inherited listening socket (set by a supervisor)")
     s.add_argument("--token"); s.add_argument("--insecure", action="store_true")
     s.add_argument("--cors-origin", action="append", default=None)
     s.add_argument("--browse", dest="browse", action="store_true", default=None)
@@ -92,7 +93,7 @@ def _config(args: argparse.Namespace) -> Config:
             roots[name] = str(Path(path).resolve())
         if roots:
             ov["roots"] = roots
-        for k in ("host", "port", "uds", "token", "insecure", "browse", "trusted_path_header", "immutable_chunks", "follow_symlinks",
+        for k in ("host", "port", "uds", "fd", "token", "insecure", "browse", "trusted_path_header", "immutable_chunks", "follow_symlinks",
                   "ssl_certfile", "ssl_keyfile", "viewer_dir"):
             v = getattr(args, k)
             if v is not None and v is not False or (k == "insecure" and v):
@@ -134,7 +135,9 @@ def _serve(args, config: Config) -> int:
     from zarrbridge.server.app import create_app
     app = create_app(config)
     kw: dict[str, Any] = {"log_level": "info" if args.verbose else "warning", "access_log": False}
-    if config.server.uds:
+    if config.server.fd:
+        kw["fd"] = config.server.fd
+    elif config.server.uds:
         kw["uds"] = config.server.uds
     else:
         kw.update(host=config.server.host, port=config.server.port)
@@ -142,7 +145,7 @@ def _serve(args, config: Config) -> int:
         kw.update(ssl_certfile=config.server.ssl_certfile, ssl_keyfile=config.server.ssl_keyfile or None)
     scheme = "https" if config.server.ssl_certfile else "http"
     print(f"zarrbridge {__version__} serving roots {list(config.roots) or '(trusted-path mode)'} on "
-          f"{config.server.uds or f'{scheme}://{config.server.host}:{config.server.port}/'}", file=sys.stderr)
+          f"{(f'fd {config.server.fd}' if config.server.fd else config.server.uds) or f'{scheme}://{config.server.host}:{config.server.port}/'}", file=sys.stderr)
     uvicorn.run(app, **kw)
     return 0
 

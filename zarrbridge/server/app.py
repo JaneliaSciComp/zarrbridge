@@ -27,6 +27,7 @@ from zarrbridge.server import browse
 from zarrbridge.server.config import Config
 from zarrbridge.server.headers import cache_control, content_type, read_strategy
 from zarrbridge.server.resolver import DatasetResolver, Forbidden, NotFound
+from urllib.parse import unquote
 
 _access = logging.getLogger("zarrbridge.access")
 _log = logging.getLogger("zarrbridge.server")
@@ -149,7 +150,8 @@ def _routes(config: Config, resolver: DatasetResolver, queue: AutoBuildQueue | N
             hdr = request.headers.get(config.server.trusted_path_header)
             if not hdr:
                 raise _Http(400, f"missing {config.server.trusted_path_header} header")
-            return resolver.check_trusted(hdr), request.path_params.get("key", "").strip("/")
+            # Header values are ASCII; the proxy percent-encodes the UTF-8 path.
+            return resolver.check_trusted(unquote(hdr)), request.path_params.get("key", "").strip("/")
         return resolver.split(request.path_params["root"], request.path_params.get("path", ""))
 
     async def status(request: Request) -> Response:
