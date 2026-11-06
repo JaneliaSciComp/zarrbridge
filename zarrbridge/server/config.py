@@ -29,6 +29,7 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8800
     uds: str = ""
+    fd: int = 0                 # inherited listening socket (uvicorn --fd); set by a supervisor
     token: str = ""
     cors_origins: list[str] = field(default_factory=list)
     browse: bool = True
