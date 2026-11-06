@@ -247,7 +247,7 @@ Keys are served by zarr-http-server's `store_app` mounted per dataset (one app p
 
 ### 8.2 Trusted-path mode (for Fileglancer)
 
-`--trusted-path-header X-Zarrbridge-Path` with `--uds /run/.../zb.sock` (or `--trusted-proxy 127.0.0.1`): the absolute source path comes from the header set by the reverse proxy, the URL path is the zarr key only, and `{root}/{path}` resolution is skipped. Requests without the header are 400. The header value is still subjected to containment against `--allow-prefix` globs. This is the contract that lets Fileglancer resolve a sharing key to a path in its own process and hand zarrbridge only the result.
+`--trusted-path-header X-Zarrbridge-Path` with `--uds /run/.../zb.sock` (or `--trusted-proxy 127.0.0.1`): the absolute source path comes from the header set by the reverse proxy (percent-encoded UTF-8, since header values are ASCII; a plain ASCII path needs no encoding), the URL path is the zarr key only, and `{root}/{path}` resolution is skipped. Requests without the header are 400. The header value is still subjected to containment against `--allow-prefix` globs. This is the contract that lets Fileglancer resolve a sharing key to a path in its own process and hand zarrbridge only the result.
 
 ### 8.3 HTTP semantics
 
