@@ -88,6 +88,7 @@ class TiffReaderConfig:
 class RefkvReaderConfig:
     connections: int = 8
     max_reads: int = 64
+    index_binding: str = "vzip"  # vzip | phkv: how the builder writes index.<binding>; any binding is read back
 
 
 @dataclass

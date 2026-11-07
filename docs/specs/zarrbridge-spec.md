@@ -194,7 +194,7 @@ cache.central_root = ~/.cache/zarrbridge/pyramids   # or an operator path
   fingerprint.json      # written LAST, after fsync of everything else; its presence means "complete"
   build.json            # progress/state while building and the final report
   lock                  # host:pid:started_at, flock'd while building
-  index.vzip            # refkv index (refkv reader only)
+  index.vzip|.phkv      # refkv index (refkv reader only; readers.refkv.index_binding) + index.json sidecar
   <image>/info.json     # the group zarr.json to serve verbatim
   <image>/1/zarr.json, <image>/1/c/...   # zarr v3 arrays, zstd(3), chunk shape per §9.3
   <image>/2/...

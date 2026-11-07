@@ -197,7 +197,7 @@ def _prune(args, config: Config) -> int:
 
 
 def _index(args, config: Config) -> int:
-    from zarrbridge.cache.layout import INDEX, cache_dir_for
+    from zarrbridge.cache.layout import cache_dir_for
     from zarrbridge.readers.base import ReaderRejected
     from zarrbridge.readers.refkv_reader import RefkvReader, save_index
     path = Path(args.target).resolve()
@@ -207,8 +207,7 @@ def _index(args, config: Config) -> int:
     except ReaderRejected as e:
         print(f"{path}: {e}", file=sys.stderr)
         return 5
-    save_index(op, cache_dir / INDEX)
-    print(str(cache_dir / INDEX))
+    print(str(save_index(op, cache_dir, config.readers.refkv.index_binding)))
     return 0
 
 

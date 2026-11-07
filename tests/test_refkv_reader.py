@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import refkv
 import zarr
 
 from tests.conftest import make_mrc, make_tiff, stack_u16
@@ -34,12 +35,33 @@ def test_index_roundtrip(tmp_path, cfg):
     p = make_tiff(tmp_path / "a.ome.tif", a, ome=True, metadata={"axes": "ZYX"}, compression="lzw", rowsperstrip=32)
     op = RefkvReader().open(p, cfg)
     assert "0" in op.transcoded
-    idx = tmp_path / "cache" / "index.vzip"
-    save_index(op, idx)
-    op2 = RefkvReader().open(p, cfg, index_path=idx)
-    assert op2.reader_reason.startswith("index") and np.array_equal(zarr.open_group(op2.store, mode="r")["0"][:], a)
+    cache = tmp_path / "cache"
+    assert save_index(op, cache) == cache / "index.vzip"
+    op2 = RefkvReader().open(p, cfg, cache_dir=cache)
+    assert op2.reader_reason == "index index.vzip" and np.array_equal(zarr.open_group(op2.store, mode="r")["0"][:], a)
+    with pytest.raises(ValueError):
+        save_index(op2, cache)  # reopened from an index: nothing to save
     os.utime(p, ns=(1, 1))  # identity changed -> index ignored, re-zarrified
-    assert RefkvReader().open(p, cfg, index_path=idx).reader_reason == "zarrified"
+    assert RefkvReader().open(p, cfg, cache_dir=cache).reader_reason == "zarrified"
+
+
+@pytest.mark.skipif("phkv" not in refkv.BINDINGS, reason="this refkv has no phkv binding")
+def test_index_phkv_binding(tmp_path, cfg):
+    a = stack_u16()
+    p = make_tiff(tmp_path / "a.ome.tif", a, ome=True, metadata={"axes": "ZYX"}, compression="lzw", rowsperstrip=32)
+    cache = tmp_path / "cache"
+    save_index(RefkvReader().open(p, cfg), cache, "vzip")
+    assert save_index(RefkvReader().open(p, cfg), cache, "phkv") == cache / "index.phkv"
+    assert sorted(f.name for f in cache.iterdir()) == ["index.json", "index.phkv"]  # the vzip is replaced
+    op = RefkvReader().open(p, cfg, cache_dir=cache)
+    assert op.reader_reason == "index index.phkv" and np.array_equal(zarr.open_group(op.store, mode="r")["0"][:], a)
+
+
+def test_index_unknown_binding(tmp_path, cfg):
+    a = stack_u16()
+    p = make_tiff(tmp_path / "a.ome.tif", a, ome=True, metadata={"axes": "ZYX"}, compression="lzw", rowsperstrip=32)
+    with pytest.raises(ValueError, match="cannot write"):
+        save_index(RefkvReader().open(p, cfg), tmp_path / "cache", "nope")
 
 
 def test_select_falls_back_to_tifffile(tmp_path, cfg):

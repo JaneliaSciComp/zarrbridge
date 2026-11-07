@@ -13,7 +13,7 @@ import zarr
 from zarr.storage import LocalStore
 
 from tests.conftest import canonical, make_mrc, make_tiff, stack_u16
-from zarrbridge.build.builder import BUILT, SKIPPED_LOCKED, SKIPPED_VALID, UNSERVABLE, build
+from zarrbridge.build.builder import BUILT, ERROR, SKIPPED_LOCKED, SKIPPED_VALID, UNSERVABLE, build
 from zarrbridge.build.downsample import block_mean
 from zarrbridge.cache.fingerprint import validate
 from zarrbridge.cache.locks import BuildLock
@@ -66,8 +66,24 @@ def test_build_refkv_ome_saves_index(tmp_path, cfg_min4):
     assert (cache / "index.vzip").exists() and (cache / "index.json").exists()
     lvl1 = zarr.open_array(LocalStore(str(cache)), path="1", mode="r")
     assert np.array_equal(lvl1[:], block_mean(a, (1, 2, 2)))
-    op = open_dataset_reader(p, cfg_min4, index_path=cache / "index.vzip")
+    op = open_dataset_reader(p, cfg_min4, cache_dir=cache)
     assert op.reader_reason.startswith("refkv: index")
+
+
+def test_build_saves_index_before_levels(tmp_path, cfg_min4, monkeypatch):
+    """The index lands first, so a failed build or a valid pyramid without one still leaves it on disk."""
+    from zarrbridge.build import builder as b
+    a = stack_u16()
+    p = make_tiff(tmp_path / "o.ome.tif", a, ome=True, metadata={"axes": "ZYX"}, compression="lzw", rowsperstrip=32)
+    cache = tmp_path / ".zarrbridge" / "o.ome.tif"
+    monkeypatch.setattr(b, "_build_locked", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert build(p, cfg_min4) == ERROR
+    assert (cache / "index.vzip").exists() and (cache / "index.json").exists()
+    monkeypatch.undo()
+    assert build(p, cfg_min4) == BUILT
+    (cache / "index.vzip").unlink(); (cache / "index.json").unlink()
+    assert build(p, cfg_min4) == SKIPPED_VALID  # valid pyramid, missing index: the index is written anyway
+    assert (cache / "index.vzip").exists()
 
 
 def test_build_locked_and_unservable(tmp_path, cfg_min4):

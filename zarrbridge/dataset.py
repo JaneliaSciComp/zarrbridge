@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from zarrbridge.build.queue import AutoBuildQueue
 from zarrbridge.cache.fingerprint import Validity, fingerprint_digest, read_fingerprint, validate
-from zarrbridge.cache.layout import BUILD_JSON, FINGERPRINT, INDEX, cache_bytes, cache_dir_for
+from zarrbridge.cache.layout import BUILD_JSON, FINGERPRINT, cache_bytes, cache_dir_for
 from zarrbridge.cache.locks import is_locked
 from zarrbridge.readers.base import Opened
 from zarrbridge.readers.registry import open_dataset_reader
@@ -50,7 +50,7 @@ class Dataset:
     def open(cls, path: Path | str, config: Any) -> "Dataset":
         path = Path(path).resolve()
         cache_dir, mode = cache_dir_for(path, config)
-        opened = open_dataset_reader(path, config, index_path=cache_dir / INDEX)
+        opened = open_dataset_reader(path, config, cache_dir=cache_dir)
         _log.info("open %s reader=%s classification=%s reason=%s", path, opened.reader_name,
                   opened.classification.state, opened.reader_reason)
         return cls(path, config, opened, cache_dir, mode)

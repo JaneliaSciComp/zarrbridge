@@ -1,4 +1,4 @@
-"""refkv reader (spec §5.4): zarrify -> ReferenceStore -> zarr store; index persisted as index.vzip."""
+"""refkv reader (spec §5.4): zarrify -> ReferenceStore -> zarr store; index persisted as index.<binding> + index.json."""
 from __future__ import annotations
 
 import hashlib
@@ -36,24 +36,24 @@ class RefkvReader:
         except Exception:
             return False
 
-    def open(self, path: Path, config: Any, index_path: Path | None = None) -> Opened:
+    def open(self, path: Path, config: Any, cache_dir: Path | None = None) -> Opened:
+        """`cache_dir` holds the saved index (`save_index`); any binding it was written with is read back."""
         path = Path(path).resolve()
         st = os.stat(path)
         hh = _head_hash(path, st.st_size)
         reason = "zarrified"
         rs = None
-        if index_path is not None and index_path.exists():
-            side = _read_sidecar(index_path)
-            if side and side.get("size") == st.st_size and side.get("mtime_ns") == st.st_mtime_ns \
-                    and side.get("header_hash") == hh and side.get("refkv_version") == refkv.__version__ \
-                    and side.get("path") == str(path):
-                try:
-                    rs = refkv.open(str(index_path))
-                    reason = f"index {index_path.name}"
-                    pins = side.get("pins", [])
-                    fmt = side.get("format")
-                except Exception:
-                    rs = None
+        side = _read_sidecar(cache_dir) if cache_dir is not None else None
+        if side and side.get("size") == st.st_size and side.get("mtime_ns") == st.st_mtime_ns \
+                and side.get("header_hash") == hh and side.get("refkv_version") == refkv.__version__ \
+                and side.get("path") == str(path) and (cache_dir / side.get("file", "")).is_file():
+            try:
+                rs = refkv.open(str(cache_dir / side["file"]), binding=side.get("binding", "vzip"))
+                reason = f"index {side['file']}"
+                pins = side.get("pins", [])
+                fmt = side.get("format")
+            except Exception:
+                rs = None
         if rs is None:
             try:
                 rs = _zarrify(path, config)
@@ -89,27 +89,45 @@ def _zarrify(path: Path, config: Any):
     return zarrify(str(path), connections=config.readers.refkv.connections)
 
 
-def _read_sidecar(index_path: Path) -> dict | None:
+def _read_sidecar(cache_dir: Path) -> dict | None:
     try:
-        return json.loads((index_path.parent / INDEX_SIDECAR).read_text())
+        return json.loads((cache_dir / INDEX_SIDECAR).read_text())
     except (OSError, ValueError):
         return None
 
 
-def save_index(opened: Opened, index_path: Path) -> None:
-    """Persist the ReferenceStore as a vzip plus a sidecar binding it to the source identity."""
-    rs = getattr(opened, "refstore", None)
-    if rs is None or not hasattr(rs, "save"):
+def has_unsaved_index(opened: Opened) -> bool:
+    """True when `opened` was zarrified in this process (a saveable ReferenceStore), not reopened from an index."""
+    return opened.reader_name == "refkv" and hasattr(getattr(opened, "refstore", None), "save")
+
+
+def save_index(opened: Opened, cache_dir: Path, binding: str = "vzip") -> Path:
+    """Persist the ReferenceStore as `cache_dir/index.<binding>` (vzip | phkv, whichever this refkv can write)
+    plus `index.json` binding it to the source identity. Returns the index path. Any other `index.*` goes."""
+    if not has_unsaved_index(opened):
         raise ValueError("opened has no saveable ReferenceStore (reopened from an index?)")
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = index_path.with_suffix(".vzip.tmp")
-    save = getattr(rs, "save_vzip", None) or rs.save
+    rs = opened.refstore  # type: ignore[attr-defined]
+    save = getattr(rs, f"save_{binding}", rs.save if binding == "vzip" else None)
+    if save is None:
+        raise ValueError(f"refkv {refkv.__version__} cannot write a {binding!r} index; bindings: {', '.join(refkv.BINDINGS)}")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    index_path = cache_dir / f"index.{binding}"
+    tmp = cache_dir / f"index.{binding}.tmp"
     save(str(tmp))
     os.replace(tmp, index_path)
     ident = opened.identity
     side = {"path": ident.path, "size": ident.size, "mtime_ns": ident.mtime_ns, "header_hash": ident.header_hash,
-            "refkv_version": refkv.__version__, "pins": ident.extras.get("pins", []), "format": ident.extras.get("format")}
-    (index_path.parent / INDEX_SIDECAR).write_text(json.dumps(side, indent=2))
+            "refkv_version": refkv.__version__, "pins": ident.extras.get("pins", []), "format": ident.extras.get("format"),
+            "binding": binding, "file": index_path.name}
+    side_tmp = cache_dir / (INDEX_SIDECAR + ".tmp")
+    side_tmp.write_text(json.dumps(side, indent=2))
+    os.replace(side_tmp, cache_dir / INDEX_SIDECAR)
+    # ponytail: two builders saving at once may unlink each other's .tmp; the loser logs a warning and the
+    # survivor's index is equivalent. A lock around save_index if that ever shows up in logs.
+    for old in cache_dir.glob("index.*"):
+        if old.name not in (index_path.name, INDEX_SIDECAR):
+            old.unlink(missing_ok=True)
+    return index_path
 
 
 def _get_json(store, key: str) -> dict | None:

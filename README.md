@@ -74,6 +74,10 @@ load. Links use an `auto` layer, so Neuroglancer applies the OME `omero` channel
   `~/.cache/zarrbridge/pyramids/<sha>/`. `fingerprint.json` is written last after fsync; any mismatch
   (source size/mtime/header hash, reader version, derivation version, schema) drops the dataset to native-only
   and the status says which field. The server never writes the cache.
+- **Index** (refkv reader): the `ReferenceStore` is saved as `<cache>/index.<binding>` plus `index.json` by the
+  first `zarrbridge build` (or `zarrbridge index`) of a file, before any level is built, so later opens reopen
+  it instead of re-parsing the file. `readers.refkv.index_binding` (`vzip`, or `phkv` on a refkv that has it)
+  chooses the format written; whichever is on disk is read back.
 - **Builder** (`zarrbridge/build/`): streams level 0 through the same store the server uses, block-mean
   downsampling in row blocks with bounded memory, cascading level k+1 from level k on disk, `.partial`
   directories renamed into place, `flock` lock, `build.json` progress. Auto-build spawns

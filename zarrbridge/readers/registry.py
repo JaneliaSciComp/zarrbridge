@@ -33,7 +33,7 @@ def sniffable(path: Path) -> bool:
     return (path.suffix.lower() in MRC_SUFFIXES and sniff_mrc(head)) or head[:4] in TIFF_MAGICS or RefkvReader.sniff(path, head)
 
 
-def open_dataset_reader(path: Path, config: Any, index_path: Path | None = None) -> Opened:
+def open_dataset_reader(path: Path, config: Any, cache_dir: Path | None = None) -> Opened:
     """Pick a reader per §5.5 and open; `reader_reason` says why. Raises ReaderRejected."""
     path = Path(path)
     if not path.is_file():
@@ -50,7 +50,7 @@ def open_dataset_reader(path: Path, config: Any, index_path: Path | None = None)
         for name in order:
             try:
                 if name == "refkv":
-                    op = _refkv.open(path, config, index_path=index_path)
+                    op = _refkv.open(path, config, cache_dir=cache_dir)
                 else:
                     op = _tiff.open(path, config)
             except ReaderRejected as e:
@@ -60,7 +60,7 @@ def open_dataset_reader(path: Path, config: Any, index_path: Path | None = None)
             return op
         raise ReaderRejected("; ".join(errors))
     if RefkvReader.sniff(path, head):
-        op = _refkv.open(path, config, index_path=index_path)
+        op = _refkv.open(path, config, cache_dir=cache_dir)
         op.reader_reason = f"refkv sniff: {op.identity.extras.get('format')}"
         return op
     raise ReaderRejected("no reader")

@@ -41,6 +41,7 @@ prefer = "refkv"           # refkv | tifffile
 [readers.refkv]
 connections = 8
 max_reads = 64
+index_binding = "vzip"     # vzip | phkv: format the builder writes the index in (ZB_READERS_REFKV_INDEX_BINDING)
 
 [limits]
 max_open_datasets = 64

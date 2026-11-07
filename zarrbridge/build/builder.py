@@ -17,7 +17,7 @@ from zarr.storage import LocalStore
 from zarrbridge.build.downsample import block_mean
 from zarrbridge.build.plan import Level, choose_factor, parse_factor, plan_dict, plan_levels
 from zarrbridge.cache.fingerprint import build_fingerprint, validate, write_fingerprint
-from zarrbridge.cache.layout import BUILD_JSON, INDEX, SOURCE_JSON, cache_dir_for, fsync_tree, info_key
+from zarrbridge.cache.layout import BUILD_JSON, SOURCE_JSON, cache_dir_for, fsync_tree, info_key
 from zarrbridge.cache.locks import BuildLock
 from zarrbridge.readers.base import Opened, ReaderRejected
 from zarrbridge.readers.registry import open_dataset_reader
@@ -83,12 +83,13 @@ def build(path: Path | str, config: Any, *, factor: str | None = None, levels: i
         pass
     cache_dir, mode = cache_dir_for(path, config, cache_mode)
     try:
-        opened = open_dataset_reader(path, config, index_path=cache_dir / INDEX)
+        opened = open_dataset_reader(path, config, cache_dir=cache_dir)
     except ReaderRejected as e:
         _log.error("%s: unservable: %s", path, e)
         _write_report(report, {"path": str(path), "status": "unservable", "error": str(e)})
         return UNSERVABLE
     try:
+        _save_index(path, opened, config, cache_dir)  # first: the server reopens from it while levels build
         if opened.classification.state == "unservable":
             _write_report(report, {"path": str(path), "status": "unservable", "error": opened.classification.reason})
             return UNSERVABLE
@@ -116,6 +117,19 @@ def build(path: Path | str, config: Any, *, factor: str | None = None, levels: i
         return ERROR
     finally:
         opened.close()
+
+
+def _save_index(path: Path, opened: Opened, config: Any, cache_dir: Path) -> None:
+    """Save the refkv index when this process zarrified (none on disk, or stale). Done before validate/lock so
+    a valid pyramid without an index, or a build that fails, still leaves the index behind."""
+    from zarrbridge.readers.refkv_reader import has_unsaved_index, save_index
+    if not has_unsaved_index(opened):
+        return
+    try:
+        out = save_index(opened, cache_dir, config.readers.refkv.index_binding)
+        _log.info("%s: saved refkv index %s", path, out)
+    except Exception as e:  # noqa: BLE001
+        _log.warning("%s: could not save refkv index: %s", path, e)
 
 
 def _write_report(report: Path | str | None, data: dict) -> None:
@@ -173,12 +187,6 @@ def _build_locked(path: Path, opened: Opened, config: Any, cache_dir: Path, mode
             os.rename(cache_dir / partial, cache_dir / img.level_path(k))
         written += _dir_bytes(cache_dir / img.path if img.path else cache_dir)
         _write_info(cache_dir, img.path, source_store, lv, opened)
-    if opened.reader_name == "refkv" and getattr(opened, "refstore", None) is not None:
-        from zarrbridge.readers.refkv_reader import save_index
-        try:
-            save_index(opened, cache_dir / INDEX)
-        except Exception as e:  # noqa: BLE001
-            _log.warning("%s: could not save refkv index: %s", path, e)
     fsync_tree(cache_dir)
     first = next(iter(plans.values()), None)
     plan = plan_dict(first, factors[next(iter(factors))], config.build.codec, config.build.method) if first else \

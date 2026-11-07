@@ -9,7 +9,6 @@ from typing import Any
 FINGERPRINT = "fingerprint.json"
 BUILD_JSON = "build.json"
 LOCK = "lock"
-INDEX = "index.vzip"
 INFO = "info.json"
 SOURCE_JSON = "source.json"
 BESIDE_DIR = ".zarrbridge"
