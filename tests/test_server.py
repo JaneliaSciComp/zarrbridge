@@ -166,3 +166,66 @@ def test_viewer_passthrough(tmp_path, monkeypatch):
     assert "/neuroglancer/#!" in c.get("/d/").text
     off = TestClient(create_app(cfg_root("d", tmp_path / "d", server__viewer_url="")))
     assert off.get("/neuroglancer/").status_code == 404 and "neuroglancer-demo.appspot.com/#!" in off.get("/d/").text
+
+
+def _slow_zarrify(monkeypatch, delay):
+    import zarrbridge.readers.refkv_reader as rr
+    real = rr._zarrify
+    calls = []
+
+    def z(path, config, timeout):
+        calls.append(path)
+        time.sleep(delay)
+        return real(path, config, timeout)
+    monkeypatch.setattr(rr, "_zarrify", z)
+    return calls
+
+
+def test_status_pending_shape(tmp_path, monkeypatch):
+    make_tiff(tmp_path / "data" / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    _slow_zarrify(monkeypatch, 1.0)
+    c = TestClient(create_app(cfg_root("data", tmp_path / "data", limits__open_grace_s=0.1)))
+    t0 = time.time()
+    s = c.get("/_status/data/a.ome.tif").json()
+    assert time.time() - t0 < 0.8
+    assert s["classification"] == "pending" and s["levels"]["state"] == "indexing" and s["levels"]["elapsed_s"] >= 0
+    assert "gives up after" in s["levels"]["reason"] and s["cache"]["mode"] == "beside"
+    assert c.get("/_status/data/a.ome.tif/0").json()["levels"]["state"] == "indexing"
+    time.sleep(1.2)
+    assert c.get("/_status/data/a.ome.tif").json()["levels"]["state"] == "native"
+
+
+def test_status_of_fast_file_is_complete_on_first_request(tmp_path):
+    make_mrc(tmp_path / "data" / "a.mrc", (16, 16, 16))
+    c = TestClient(create_app(cfg_root("data", tmp_path / "data")))
+    assert c.get("/_status/data/a.mrc").json()["levels"]["state"] == "native"
+
+
+def test_open_timeout_is_unindexed(tmp_path, monkeypatch):
+    make_tiff(tmp_path / "data" / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    import zarrbridge.readers.refkv_reader as rr
+    from zarrbridge.readers.base import IndexTimeout
+    monkeypatch.setattr(rr, "_zarrify", lambda path, config, timeout: (_ for _ in ()).throw(IndexTimeout(path, 60)))
+    c = TestClient(create_app(cfg_root("data", tmp_path / "data")))
+    s = c.get("/_status/data/a.ome.tif").json()
+    assert s["classification"] == "unindexed" and s["levels"]["state"] == "unindexed"
+    assert "too big to index automatically" in s["levels"]["reason"] and "indexed manually" in s["levels"]["reason"]
+    r = c.get("/data/a.ome.tif/zarr.json")
+    assert r.status_code == 422 and r.text.startswith("unindexed:")
+
+
+def test_pending_open_does_not_block_other_requests(tmp_path, monkeypatch):
+    make_tiff(tmp_path / "data" / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    make_mrc(tmp_path / "data" / "b.mrc", (16, 16, 16))
+    _slow_zarrify(monkeypatch, 1.5)
+    c = TestClient(create_app(cfg_root("data", tmp_path / "data", limits__open_grace_s=0.1)))
+    done = []
+    ts = [threading.Thread(target=lambda: done.append(c.get("/data/a.ome.tif/zarr.json").status_code)) for _ in range(40)]
+    [t.start() for t in ts]
+    time.sleep(0.3)                       # 40 key requests are now waiting on one open
+    t0 = time.time()
+    assert c.get("/data/b.mrc/zarr.json").status_code == 200 and c.get("/_health").status_code == 200
+    assert c.get("/_status/data/a.ome.tif").json()["levels"]["state"] == "indexing"
+    assert time.time() - t0 < 0.5         # served while a.ome.tif was still opening, with no pool to exhaust
+    [t.join() for t in ts]
+    assert done == [200] * 40

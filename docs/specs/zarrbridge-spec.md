@@ -270,7 +270,7 @@ Keys are served by zarr-http-server's `store_app` mounted per dataset (one app p
 }
 ```
 
-`levels.state ∈ {native, indexing, queued, building, multiscale, failed, unservable}`. Viewers and Fileglancer read this to show the three-state badge and to decide whether to offer "Build multiscale".
+`levels.state ∈ {native, indexing, queued, building, multiscale, failed, unservable, unindexed}`. Viewers and Fileglancer read this to show the three-state badge and to decide whether to offer "Build multiscale". `unindexed` is terminal: the open hit `limits.open_timeout_s`; the file is too big to index automatically and must be indexed manually with `zarrbridge index`, after which the saved index makes the next open fast. `_status` never blocks for longer than `limits.open_grace_s`; while a dataset is being opened it reports `indexing` with `elapsed_s` (and `classification: pending`). Opens run on worker threads; requests waiting for one hold neither the loop nor a thread. `limits.open_timeout_s` applies to the server only. `zarrbridge build` and `zarrbridge index` have no deadline: they are how a file the server gave up on gets indexed.
 
 Only `indexing`, `queued` and `building` are transient; a client polls while it sees one of them and stops on anything else. The server therefore never reports a build that will not happen (over `auto_max_bytes`, auto-build off) as `queued`: that is `native` with the reason. An auto-build subprocess that exits non-zero without writing `build.json` is `failed` with its exit code, not `native`.
 
@@ -287,7 +287,7 @@ On first open of a dataset whose cache is `missing|stale|outdated|incompatible` 
 
 ### 8.6 Limits
 
-`limits.max_open_datasets`, `limits.chunk_cache_bytes` (small LRU of encoded chunks, default 256 MiB), `limits.max_decodes`, `limits.max_reads_per_chunk` (refuse chunks whose plan exceeds it; pairs with classification), `limits.max_chunk_bytes` (chunks above it make the dataset `unservable` unless uncompressed, default 64 MiB).
+`limits.max_open_datasets`, `limits.chunk_cache_bytes` (small LRU of encoded chunks, default 256 MiB), `limits.max_decodes`, `limits.max_reads_per_chunk` (refuse chunks whose plan exceeds it; pairs with classification), `limits.max_chunk_bytes` (chunks above it make the dataset `unservable` unless uncompressed, default 64 MiB), `limits.open_timeout_s` (60 s; the read walk is cancelled: at most `readers.refkv.connections` in-flight reads finish, and a projection already running completes; process isolation would make the stop absolute and is not worth a subprocess per open), `limits.open_grace_s` (2 s; how long `_status` waits for an in-flight open before answering `indexing`), `limits.open_retry_s` (60 s; a timed-out file is not reopened sooner), `limits.index_save_after_s` (5 s; a server-side zarrify slower than this saves its refkv index beside the cache so the next open is fast).
 
 ### 8.7 Logging
 
