@@ -1,6 +1,7 @@
 """DatasetResolver (spec §8.1, §8.2): {root}/{path} -> (Dataset, zarr key); LRU of open datasets."""
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
 import os
@@ -12,7 +13,7 @@ from typing import Any
 
 from zarrbridge.build.queue import AutoBuildQueue
 from zarrbridge.dataset import Dataset
-from zarrbridge.readers.base import ReaderRejected
+from zarrbridge.readers.base import IndexTimeout, ReaderRejected
 
 _log = logging.getLogger("zarrbridge.server")
 
@@ -25,6 +26,14 @@ class Forbidden(Exception):
     pass
 
 
+class StillOpening(Exception):
+    """The dataset is being opened and was not ready within the wait the caller allowed."""
+
+    def __init__(self, started_at: float) -> None:
+        super().__init__("dataset is still opening")
+        self.started_at = started_at
+
+
 class DatasetResolver:
     def __init__(self, config: Any, queue: AutoBuildQueue | None = None) -> None:
         self.config = config
@@ -32,6 +41,8 @@ class DatasetResolver:
         self.roots = {name: Path(p).resolve() for name, p in config.roots.items()}
         self._lru: "OrderedDict[Path, Dataset]" = OrderedDict()
         self._rejected: dict[Path, tuple[str, float]] = {}
+        self._unindexed: dict[Path, tuple[str, float]] = {}
+        self._opening: dict[Path, _Opening] = {}
         self._lock = threading.Lock()
 
     @property
@@ -82,8 +93,60 @@ class DatasetResolver:
         return p
 
     # -- datasets ----------------------------------------------------------------------------------------------
-    def dataset(self, path: Path) -> Dataset:
+    def cached(self, path: Path) -> Dataset | None:
+        """The open dataset for `path`, or None. No open, no source check."""
+        with self._lock:
+            return self._lru.get(Path(path))
+
+    def open_state(self, path: Path) -> tuple[str, dict] | None:
+        """What a client should know about a dataset that is not (yet) open: `indexing` while an open is in
+        flight, `unindexed` for `limits.open_retry_s` after a timeout, `unservable` for 30 s after a rejection."""
         path = Path(path)
+        now = time.time()
+        with self._lock:
+            op = self._opening.get(path)
+            if op is not None:
+                return "indexing", {"started_at": op.started_at}
+            un = self._unindexed.get(path)
+            if un and now - un[1] < self.config.limits.open_retry_s:
+                return "unindexed", {"reason": un[0]}
+            rej = self._rejected.get(path)
+            if rej and now - rej[1] < 30:
+                return "unservable", {"reason": rej[0]}
+        return None
+
+    def dataset(self, path: Path, wait: float | None = None) -> Dataset:
+        """The dataset at `path`, opened on a worker thread once per path however many callers ask. Waits at
+        most `wait` seconds (None: until the open ends, which limits.open_timeout_s bounds); raises
+        StillOpening when it is not done by then, IndexTimeout / ReaderRejected when the open failed."""
+        got = self._start_or_join(Path(path))
+        if isinstance(got, Dataset):
+            return got
+        if not got.done.wait(wait):
+            raise StillOpening(got.started_at)
+        return got.outcome()
+
+    async def dataset_async(self, path: Path, wait: float | None = None) -> Dataset:
+        """`dataset` for coroutines: waits on a future the opener thread resolves, holding no thread."""
+        got = self._start_or_join(Path(path))
+        if isinstance(got, Dataset):
+            return got
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        with self._lock:
+            if got.done.is_set():
+                fut.set_result(None)
+            else:
+                got.waiters.append((loop, fut))
+        try:
+            await asyncio.wait_for(asyncio.shield(fut), wait)
+        except asyncio.TimeoutError:
+            raise StillOpening(got.started_at) from None
+        return got.outcome()
+
+    def _start_or_join(self, path: Path) -> "Dataset | _Opening":
+        """The open dataset, or the in-flight open to wait on (started here when there is none). A remembered
+        timeout or rejection is raised instead of reopening."""
         with self._lock:
             ds = self._lru.get(path)
             if ds is not None and not ds.source_changed():
@@ -93,27 +156,56 @@ class DatasetResolver:
             if ds is not None:  # replaced on disk: reopen
                 self._lru.pop(path, None)
                 ds.close()
+            op = self._opening.get(path)
+            if op is not None:
+                return op
+            now = time.time()
+            un = self._unindexed.get(path)
+            if un and now - un[1] < self.config.limits.open_retry_s:
+                raise IndexTimeout(path, self.config.limits.open_timeout_s)
             rej = self._rejected.get(path)
-            if rej and time.time() - rej[1] < 30:
+            if rej and now - rej[1] < 30:
                 raise ReaderRejected(rej[0])
+            op = self._opening[path] = _Opening(now)
+        threading.Thread(target=self._open, args=(path, op), name="zarrbridge-open", daemon=True).start()
+        return op
+
+    def _open(self, path: Path, op: "_Opening") -> None:
         try:
             ds = Dataset.open(path, self.config)
+        except IndexTimeout as e:
+            with self._lock:
+                self._unindexed[path] = (str(e), time.time())
+            op.error = e
         except ReaderRejected as e:
             with self._lock:
                 self._rejected[path] = (str(e), time.time())
-            raise
-        with self._lock:
-            existing = self._lru.get(path)
-            if existing is not None:
-                ds.close()
-                return existing
-            self._lru[path] = ds
-            while len(self._lru) > self.config.limits.max_open_datasets:
-                _, old = self._lru.popitem(last=False)
-                old.close()
-        if self.config.build.auto:
-            ds.ensure_pyramid("auto", self.queue)
-        return ds
+            op.error = e
+        except Exception as e:  # noqa: BLE001 - surface to every waiter rather than hang them
+            _log.exception("open %s failed", path)
+            op.error = e
+        else:
+            with self._lock:
+                self._unindexed.pop(path, None)
+                existing = self._lru.get(path)
+                if existing is not None:
+                    ds.close()
+                    ds = existing
+                else:
+                    self._lru[path] = ds
+                    while len(self._lru) > self.config.limits.max_open_datasets:
+                        _, old = self._lru.popitem(last=False)
+                        old.close()
+            op.result = ds
+            if self.config.build.auto:
+                ds.ensure_pyramid("auto", self.queue)
+        finally:
+            with self._lock:
+                self._opening.pop(path, None)
+                waiters, op.waiters = op.waiters, []
+                op.done.set()
+            for loop, fut in waiters:
+                loop.call_soon_threadsafe(_resolve, fut)
 
     def close_idle(self, idle_seconds: float = 600) -> None:
         now = time.time()
@@ -128,3 +220,25 @@ class DatasetResolver:
             for ds in self._lru.values():
                 ds.close()
             self._lru.clear()
+
+
+def _resolve(fut: "asyncio.Future") -> None:
+    if not fut.done():
+        fut.set_result(None)
+
+
+class _Opening:
+    """One in-flight Dataset.open: who waits on it and how it ended."""
+
+    def __init__(self, started_at: float) -> None:
+        self.started_at = started_at
+        self.done = threading.Event()
+        self.result: Dataset | None = None
+        self.error: BaseException | None = None
+        self.waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future]] = []
+
+    def outcome(self) -> Dataset:
+        if self.error is not None:
+            raise self.error
+        assert self.result is not None
+        return self.result
