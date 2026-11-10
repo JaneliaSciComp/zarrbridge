@@ -141,6 +141,9 @@ class DatasetResolver:
         try:
             await asyncio.wait_for(asyncio.shield(fut), wait)
         except asyncio.TimeoutError:
+            with self._lock:  # leave: this loop may be gone when the open ends
+                if (loop, fut) in got.waiters:
+                    got.waiters.remove((loop, fut))
             raise StillOpening(got.started_at) from None
         return got.outcome()
 
@@ -205,7 +208,10 @@ class DatasetResolver:
                 waiters, op.waiters = op.waiters, []
                 op.done.set()
             for loop, fut in waiters:
-                loop.call_soon_threadsafe(_resolve, fut)
+                try:
+                    loop.call_soon_threadsafe(_resolve, fut)
+                except RuntimeError:  # that waiter's loop is closed; the others still get their answer
+                    pass
 
     def close_idle(self, idle_seconds: float = 600) -> None:
         now = time.time()

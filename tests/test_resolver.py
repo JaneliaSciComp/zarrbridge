@@ -90,3 +90,23 @@ def test_unindexed_is_retried_after_open_retry_s(tmp_path, monkeypatch):
     assert len(calls) == 1
     time.sleep(0.25)
     assert r.dataset(p) is not None and len(calls) == 2 and r.open_state(p) is None
+
+
+def test_waiter_on_closed_loop_does_not_strand_others(tmp_path, monkeypatch):
+    # A _status poll registers a waiter and times out; its loop may be gone when the open
+    # ends. Notifying it must not raise and must not stop later waiters from being resolved.
+    p = make_mrc(tmp_path / "a.mrc", (16, 16, 16))
+    monkeypatch.setattr(Dataset, "open", _slow_open(0.6, []))
+    r = DatasetResolver(_cfg(tmp_path))
+
+    async def poll_and_leave():
+        with pytest.raises(StillOpening):
+            await r.dataset_async(p, wait=0.05)
+    asyncio.run(poll_and_leave())            # this loop is now closed
+
+    async def wait_for_it():
+        return await asyncio.wait_for(r.dataset_async(p), 5)
+    ds = asyncio.run(wait_for_it())
+    assert ds is r.cached(p)
+    op = r._opening.get(p)
+    assert op is None
