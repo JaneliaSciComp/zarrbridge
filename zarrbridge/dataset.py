@@ -50,7 +50,7 @@ class Dataset:
     def open(cls, path: Path | str, config: Any) -> "Dataset":
         path = Path(path).resolve()
         cache_dir, mode = cache_dir_for(path, config)
-        opened = open_dataset_reader(path, config, cache_dir=cache_dir)
+        opened = open_dataset_reader(path, config, cache_dir=cache_dir, timeout=config.limits.open_timeout_s or None)
         _log.info("open %s reader=%s classification=%s reason=%s", path, opened.reader_name,
                   opened.classification.state, opened.reader_reason)
         return cls(path, config, opened, cache_dir, mode)

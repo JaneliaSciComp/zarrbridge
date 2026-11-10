@@ -94,3 +94,102 @@ def test_bare_arrays_become_images(tmp_path, cfg):
     assert np.array_equal(g["array/0"][:], np.arange(600, dtype="<i2").reshape(20, 30))
     from ome_zarr_models.v05.image import Image
     Image.from_zarr(g["array"])
+
+
+def test_zarrify_timeout_cancels_and_raises(tmp_path, cfg, monkeypatch):
+    import asyncio, time
+    import refkv.zarrify
+    from zarrbridge.readers.base import IndexTimeout
+    from zarrbridge.readers.refkv_reader import _zarrify
+    state = {"cancelled": False}
+
+    async def slow(*a, **k):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    monkeypatch.setattr(refkv.zarrify, "zarrify_async", slow)
+    t0 = time.time()
+    with pytest.raises(IndexTimeout, match="too big to index automatically"):
+        _zarrify(tmp_path / "x.czi", cfg, timeout=0.2)
+    assert time.time() - t0 < 2
+    time.sleep(0.1)
+    assert state["cancelled"]
+
+
+def test_cancel_stops_scheduling_executor_work(tmp_path, cfg, monkeypatch):
+    # Cancellation lands while a read is running on refkv's executor: that read
+    # finishes, nothing after it starts. This is the guarantee the spec states.
+    import asyncio, time
+    import refkv.zarrify
+    from zarrbridge.readers.base import IndexTimeout
+    from zarrbridge.readers.refkv_reader import _zarrify
+    steps = []
+
+    def blocking_read(i):
+        time.sleep(0.05)
+        steps.append(i)
+
+    async def fake(*a, **k):
+        loop = asyncio.get_running_loop()
+        for i in range(100):
+            await loop.run_in_executor(None, blocking_read, i)
+
+    monkeypatch.setattr(refkv.zarrify, "zarrify_async", fake)
+    with pytest.raises(IndexTimeout):
+        _zarrify(tmp_path / "x.czi", cfg, timeout=0.3)
+    n = len(steps)
+    assert 3 <= n <= 8          # a few reads happened, then the deadline
+    time.sleep(0.4)
+    assert len(steps) <= n + 1  # at most the in-flight read completed afterwards
+
+
+def test_timeout_is_opt_in(tmp_path, cfg, monkeypatch):
+    # The builder and `zarrbridge index` never pass a timeout: they are the manual resolution.
+    import time
+    import zarrbridge.readers.refkv_reader as rr
+    from zarrbridge.build.builder import build, BUILT
+    real = rr._zarrify
+
+    def slow(path, config, timeout):
+        assert timeout is None
+        time.sleep(0.3)
+        return real(path, config, timeout)
+    monkeypatch.setattr(rr, "_zarrify", slow)
+    cfg.limits.open_timeout_s = 0.05
+    cfg.build.min_axis = 4
+    p = make_tiff(tmp_path / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    assert build(p, cfg) == BUILT
+    assert RefkvReader().open(p, cfg).identity.extras["format"] == "tiff"
+
+
+def test_cli_index_ignores_open_timeout(tmp_path, monkeypatch):
+    # `zarrbridge index` is the recovery command the unindexed reason names: it must not time out.
+    import time
+    import zarrbridge.readers.refkv_reader as rr
+    from zarrbridge.cli import main
+    real = rr._zarrify
+
+    def slow(path, config, timeout):
+        assert timeout is None
+        time.sleep(0.3)
+        return real(path, config, timeout)
+    monkeypatch.setattr(rr, "_zarrify", slow)
+    monkeypatch.setenv("ZB_LIMITS_OPEN_TIMEOUT_S", "0.05")
+    p = make_tiff(tmp_path / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    assert main(["--cache-mode", "central", "--central-root", str(tmp_path / "c"), "index", str(p)]) == 0
+    assert list((tmp_path / "c").rglob("index.vzip"))
+
+
+def test_registry_does_not_swallow_timeout(tmp_path, cfg, monkeypatch):
+    import zarrbridge.readers.refkv_reader as rr
+    from zarrbridge.readers.base import IndexTimeout
+    monkeypatch.setattr(rr, "_zarrify", lambda path, config, timeout: (_ for _ in ()).throw(IndexTimeout(path, 60)))
+    p = make_tiff(tmp_path / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    with pytest.raises(IndexTimeout):
+        open_dataset_reader(p, cfg, timeout=60)
+    # no timeout requested: not even attempted, the real zarrify runs
+    monkeypatch.undo()
+    assert open_dataset_reader(p, cfg).reader_name == "refkv"

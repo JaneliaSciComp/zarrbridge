@@ -111,6 +111,10 @@ class LimitsConfig:
     max_decodes: int = 0  # 0 -> os.cpu_count()
     max_reads_per_chunk: int = 256
     max_chunk_bytes: int = 64 * 2**20
+    open_timeout_s: float = 60.0  # server-side open deadline (refkv indexing); 0 = none. build/index never time out
+    open_grace_s: float = 2.0  # how long _status waits for an in-flight open before answering `indexing`
+    open_retry_s: float = 60.0  # a timed-out file is not reopened sooner than this
+    index_save_after_s: float = 5.0  # a server-side zarrify slower than this saves its refkv index
 
 
 _BYTE_FIELDS = {("build", "auto_max_bytes"), ("limits", "chunk_cache_bytes"), ("limits", "max_chunk_bytes")}

@@ -13,7 +13,7 @@ import refkv.zarr as rzarr  # registers refkv codecs with zarr
 
 from zarrbridge._sync import run_sync
 from zarrbridge.cache.layout import make_cache_dir
-from zarrbridge.readers.base import (Classification, ImageInfo, Opened, ReaderRejected, SourceIdentity,
+from zarrbridge.readers.base import (Classification, ImageInfo, IndexTimeout, Opened, ReaderRejected, SourceIdentity,
                                      classify_chunks)
 from zarrbridge.store.codecs import ALLOWLIST, codec_names, needs_transcode
 
@@ -37,7 +37,7 @@ class RefkvReader:
         except Exception:
             return False
 
-    def open(self, path: Path, config: Any, cache_dir: Path | None = None) -> Opened:
+    def open(self, path: Path, config: Any, cache_dir: Path | None = None, *, timeout: float | None = None) -> Opened:
         """`cache_dir` holds the saved index (`save_index`); any binding it was written with is read back."""
         path = Path(path).resolve()
         st = os.stat(path)
@@ -57,7 +57,7 @@ class RefkvReader:
                 rs = None
         if rs is None:
             try:
-                rs = _zarrify(path, config)
+                rs = _zarrify(path, config, timeout)
             except (refkv.zarrify.Rejected, NotImplementedError, ValueError) as e:
                 raise ReaderRejected(f"refkv rejected: {e}") from e
             pins = [{"url": s.url, "size": s.size, "etag": s.etag, "modified_not_after": s.modified_not_after}
@@ -85,9 +85,15 @@ class RefkvReader:
         return op
 
 
-def _zarrify(path: Path, config: Any):
-    from refkv.zarrify import zarrify
-    return zarrify(str(path), connections=config.readers.refkv.connections)
+def _zarrify(path: Path, config: Any, timeout: float | None):
+    """refkv's zarrify, given up (cancelled) after `timeout` seconds; None means no deadline."""
+    import refkv.zarrify
+    from zarrbridge._sync import run_sync_with_timeout
+    coro = refkv.zarrify.zarrify_async(str(path), connections=config.readers.refkv.connections)
+    try:
+        return run_sync_with_timeout(coro, timeout)
+    except TimeoutError:
+        raise IndexTimeout(path, timeout) from None
 
 
 def _read_sidecar(cache_dir: Path) -> dict | None:

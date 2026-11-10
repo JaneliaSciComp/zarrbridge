@@ -15,6 +15,17 @@ class ReaderRejected(Exception):
     """A reader cannot serve this file; the message is the reason (spec §3.7)."""
 
 
+class IndexTimeout(ReaderRejected):
+    """The reader did not finish indexing within the server's deadline. Terminal: the file must be
+    indexed by hand (`zarrbridge index`), which has no deadline."""
+
+    def __init__(self, path, timeout_s: float) -> None:
+        self.timeout_s = timeout_s
+        super().__init__(f"indexing did not finish within {timeout_s:.0f} s, so this file is too big to index "
+                         f"automatically. It needs to be indexed manually: run `zarrbridge index {path}`; "
+                         f"the saved index makes later opens fast.")
+
+
 @dataclass(frozen=True)
 class ImageInfo:
     path: str  # group path relative to dataset root; "" when the image is the root
