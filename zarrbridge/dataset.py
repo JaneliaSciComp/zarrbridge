@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from zarrbridge.build.queue import AutoBuildQueue
 from zarrbridge.cache.fingerprint import Validity, fingerprint_digest, read_fingerprint, validate
-from zarrbridge.cache.layout import BUILD_JSON, FINGERPRINT, cache_bytes, cache_dir_for
+from zarrbridge.cache.layout import BUILD_JSON, FINGERPRINT, cache_bytes, cache_dir_for, cache_writable
 from zarrbridge.cache.locks import is_locked
 from zarrbridge.readers.base import Opened
 from zarrbridge.readers.registry import open_dataset_reader
@@ -162,7 +162,9 @@ class Dataset:
         if rc is not None:
             return "failed", {"reason": f"auto-build exited {rc} without writing a result"}
         reason = f"cache {self.validity}" + (f" ({self.mismatch} mismatch)" if self.mismatch else "")
-        if self.config.build.auto and self.opened.identity.size > self.config.build.auto_max_bytes:
+        if not cache_writable(self.cache_dir):
+            reason += "; cache directory not writable by this user: its owner must run `zarrbridge build`"
+        elif self.config.build.auto and self.opened.identity.size > self.config.build.auto_max_bytes:
             reason += "; file exceeds build.auto_max_bytes: run `zarrbridge build` or submit a job"
         elif not self.config.build.auto:
             reason += "; auto-build off: run `zarrbridge build`"
@@ -194,7 +196,8 @@ class Dataset:
             "levels": levels,
             "cache": {"mode": self.cache_mode, "dir": str(self.cache_dir),
                       "bytes": cache_bytes(self.cache_dir) if self.cache_dir.exists() else 0,
-                      "fingerprint": self.validity, "mismatch": self.mismatch},
+                      "fingerprint": self.validity, "mismatch": self.mismatch,
+                      "writable": cache_writable(self.cache_dir)},
             "advice": advice,
         }
 
@@ -209,6 +212,8 @@ class Dataset:
             return rc
         if not self.config.build.auto or self.opened.identity.size > self.config.build.auto_max_bytes:
             return None
+        if not cache_writable(self.cache_dir):
+            return None  # another user's beside cache gone stale: a build here can only fail
         if self.validity in ("missing", "stale", "outdated", "incompatible") and queue is not None:
             queue.enqueue(self.path, self.cache_dir, self.cache_mode)
         return None

@@ -112,3 +112,25 @@ def test_auto_build_crash_is_reported_as_failed(tmp_path):
     st = ds.status(q)
     assert st["levels"]["state"] == "failed" and "137" in st["levels"]["reason"]
     q.shutdown()
+
+
+def test_unwritable_beside_cache_is_served_but_never_built(tmp_path, cfg_min4):
+    # Another user's .zarrbridge with a strict umask: readable, not writable. Enqueuing a
+    # build there can only fail, so the state must be terminal and say whose job it is.
+    import os
+    p = make_mrc(tmp_path / "a.mrc", (16, 16, 16))
+    cache = tmp_path / ".zarrbridge" / "a.mrc"
+    cache.mkdir(parents=True)
+    cache.chmod(0o555)
+    try:
+        if os.access(cache, os.W_OK):  # root
+            return
+        ds = Dataset.open(p, cfg_min4)
+        q = AutoBuildQueue(cfg_min4, popen=lambda *a, **k: (_ for _ in ()).throw(AssertionError("spawned")))
+        ds.ensure_pyramid("auto", q)
+        st = ds.status(q)
+        assert st["cache"] == {**st["cache"], "mode": "beside", "writable": False}
+        assert st["levels"]["state"] == "native" and "not writable" in st["levels"]["reason"]
+        q.shutdown()
+    finally:
+        cache.chmod(0o755)

@@ -185,7 +185,7 @@ cache.mode = beside | central         # default: beside if the file's directory 
 cache.central_root = ~/.cache/zarrbridge/pyramids   # or an operator path
 ```
 
-`beside`: `<dir>/.zarrbridge/<filename>/`. Permissions follow the data; a pyramid one lab member builds is readable by anyone who can read the file. `central`: `<central_root>/<sha256(abs_path)[:2]>/<sha256(abs_path)>/`, with the absolute path recorded inside for `prune` and `status`.
+`beside`: `<dir>/.zarrbridge/<filename>/`. Permissions follow the data; a pyramid one lab member builds is readable by anyone who can read the file. The builder runs with umask 002 and gives a `.zarrbridge` directory it creates setgid + group write (02775), so caches keep the data directory's group and any group member can lock, rebuild and prune them. An existing beside cache this user cannot write is still served, but never enqueued for auto-build: status reports `native` with the reason and `cache.writable: false`. `central`: `<central_root>/<sha256(abs_path)[:2]>/<sha256(abs_path)>/`, with the absolute path recorded inside for `prune` and `status`.
 
 ### 7.2 Layout
 

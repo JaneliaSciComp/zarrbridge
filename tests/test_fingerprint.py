@@ -65,3 +65,22 @@ def test_cache_dir_modes(tmp_path, cfg):
         assert m == "central" and str(d).startswith(os.path.expanduser("~/.cache/zarrbridge/pyramids"))
     finally:
         ro.chmod(0o755)
+
+
+def test_make_cache_dir_sets_setgid_on_new_beside_root(tmp_path):
+    import stat
+    from zarrbridge.cache.layout import cache_writable, make_cache_dir
+    cache = tmp_path / ".zarrbridge" / "a.mrc"
+    make_cache_dir(cache)
+    mode = (tmp_path / ".zarrbridge").stat().st_mode
+    assert cache.is_dir() and mode & stat.S_ISGID and mode & stat.S_IWGRP
+    assert cache_writable(cache) and cache_writable(tmp_path / ".zarrbridge" / "not-yet")
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o555)
+    try:
+        if os.access(ro, os.W_OK):  # root
+            return
+        assert not cache_writable(ro / ".zarrbridge" / "b.mrc")
+    finally:
+        ro.chmod(0o755)

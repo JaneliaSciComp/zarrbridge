@@ -17,7 +17,7 @@ from zarr.storage import LocalStore
 from zarrbridge.build.downsample import block_mean
 from zarrbridge.build.plan import Level, choose_factor, parse_factor, plan_dict, plan_levels
 from zarrbridge.cache.fingerprint import build_fingerprint, validate, write_fingerprint
-from zarrbridge.cache.layout import BUILD_JSON, SOURCE_JSON, cache_dir_for, fsync_tree, info_key
+from zarrbridge.cache.layout import BUILD_JSON, SOURCE_JSON, cache_dir_for, fsync_tree, info_key, make_cache_dir
 from zarrbridge.cache.locks import BuildLock
 from zarrbridge.readers.base import Opened, ReaderRejected
 from zarrbridge.readers.registry import open_dataset_reader
@@ -81,6 +81,7 @@ def build(path: Path | str, config: Any, *, factor: str | None = None, levels: i
         os.nice(int(config.build.nice))
     except (OSError, ValueError):
         pass
+    os.umask(0o002)  # a beside cache is shared: group members must be able to lock, rebuild and prune it
     cache_dir, mode = cache_dir_for(path, config, cache_mode)
     try:
         opened = open_dataset_reader(path, config, cache_dir=cache_dir)
@@ -149,7 +150,7 @@ def _build_locked(path: Path, opened: Opened, config: Any, cache_dir: Path, mode
             for child in base.iterdir():
                 if child.is_dir() and (child.name.isdigit() or child.name.endswith(".partial")):
                     shutil.rmtree(child)
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    make_cache_dir(cache_dir)
     if mode == "central":
         (cache_dir / SOURCE_JSON).write_text(json.dumps({"path": str(path)}))
     prog = _Progress(cache_dir, progress_cb)

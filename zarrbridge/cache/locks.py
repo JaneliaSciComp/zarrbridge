@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from zarrbridge.cache.layout import LOCK
+from zarrbridge.cache.layout import LOCK, make_cache_dir
 
 _log = logging.getLogger("zarrbridge.build")
 
@@ -57,7 +57,7 @@ class BuildLock:
     @classmethod
     def acquire(cls, cache_dir: Path, stale_seconds: float = 6 * 3600) -> "BuildLock | None":
         cache_dir = Path(cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        make_cache_dir(cache_dir)
         path = cache_dir / LOCK
         for attempt in range(2):
             fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o664)

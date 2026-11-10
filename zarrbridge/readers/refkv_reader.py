@@ -12,6 +12,7 @@ import refkv.ir
 import refkv.zarr as rzarr  # registers refkv codecs with zarr
 
 from zarrbridge._sync import run_sync
+from zarrbridge.cache.layout import make_cache_dir
 from zarrbridge.readers.base import (Classification, ImageInfo, Opened, ReaderRejected, SourceIdentity,
                                      classify_chunks)
 from zarrbridge.store.codecs import ALLOWLIST, codec_names, needs_transcode
@@ -110,7 +111,7 @@ def save_index(opened: Opened, cache_dir: Path, binding: str = "vzip") -> Path:
     save = getattr(rs, f"save_{binding}", rs.save if binding == "vzip" else None)
     if save is None:
         raise ValueError(f"refkv {refkv.__version__} cannot write a {binding!r} index; bindings: {', '.join(refkv.BINDINGS)}")
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    make_cache_dir(cache_dir)
     index_path = cache_dir / f"index.{binding}"
     tmp = cache_dir / f"index.{binding}.tmp"
     save(str(tmp))
