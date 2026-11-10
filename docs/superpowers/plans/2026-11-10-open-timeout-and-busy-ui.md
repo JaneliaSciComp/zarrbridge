@@ -26,6 +26,7 @@
 - A user who reloads the page during the 60 s window: no second zarrify of the same file may start. Pinned by Task 2's `test_concurrent_dataset_calls_open_once`.
 - A fast file (MRC, small TIFF) must not flash "indexing" on first visit: `_status` waits a short grace period for the open before answering pending. Pinned by Task 3's `test_status_of_fast_file_is_complete_on_first_request`.
 - A timeout followed by a manual `zarrbridge index`: the server must pick up the saved index after the retry window, not stay `unindexed` forever. Pinned by Task 2's `test_unindexed_is_retried_after_open_retry_s`.
+- Indexing finishes between the pending root listing and the first status poll: the listing must still be refreshed. Pinned by Task 7's `shouldRefreshListing` test.
 - A dataset opening for 60 s must not stall chunk requests for other files on the same dataserver. Pinned by Task 3's `test_pending_open_does_not_block_other_requests`.
 - `zarrbridge build` and `zarrbridge index` must run to completion on a file the server gave up on; they are the manual resolution. Pinned by Task 1's `test_timeout_is_opt_in`.
 - The `_status` key is reachable from inside the hierarchy (`image.tif/0/_status`) and the pending answer must be the same there. Pinned by Task 3's `test_status_pending_shape` which calls both forms.
@@ -44,7 +45,7 @@
 - Test: `tests/test_refkv_reader.py`
 
 **Interfaces:**
-- Produces: `run_sync_with_timeout(coro: Awaitable[T], timeout: float | None) -> T` in `zarrbridge/_sync.py`; raises builtin `TimeoutError` after cancelling the coroutine's task on the background loop.
+- Produces: `run_sync_with_timeout(coro: Awaitable[T], timeout: float | None) -> T` in `zarrbridge/_sync.py`; raises builtin `TimeoutError` after cancelling the coroutine's task on the background loop. What cancellation buys, and what it does not: refkv's `drive_async` awaits each read batch through its own thread pool and shuts that pool down with `cancel_futures=True` in a `finally`, so at most `readers.refkv.connections` in-flight reads finish and no further read is scheduled. The projection step (`asyncio.to_thread(output)`) runs to completion if cancellation lands during it; it is CPU work on data already read, seconds for this file. The hour-long read walk is what stops. Process isolation would make the stop absolute and is not worth a subprocess per open; say so in the spec.
 - Produces: `class IndexTimeout(ReaderRejected)` in `zarrbridge/readers/base.py` with `__init__(self, path: Path, timeout_s: float)` and attribute `timeout_s`; its message is `f"indexing did not finish within {timeout_s:.0f} s, so this file is too big to index automatically. It needs to be indexed manually: run `zarrbridge index {path}`; the saved index makes later opens fast."`.
 - Produces: `LimitsConfig.open_timeout_s: float = 60.0`, `LimitsConfig.open_grace_s: float = 2.0`, `LimitsConfig.open_retry_s: float = 60.0`, `LimitsConfig.index_save_after_s: float = 5.0`. Zero disables each.
 - Produces: `_zarrify(path: Path, config, timeout: float | None) -> ReferenceStore`; `None` means no deadline; raises `IndexTimeout` otherwise.
@@ -77,6 +78,33 @@ def test_zarrify_timeout_cancels_and_raises(tmp_path, cfg, monkeypatch):
     assert state["cancelled"]
 
 
+def test_cancel_stops_scheduling_executor_work(tmp_path, cfg, monkeypatch):
+    # Cancellation lands while a read is running on refkv's executor: that read
+    # finishes, nothing after it starts. This is the guarantee the spec states.
+    import asyncio, time
+    import refkv.zarrify
+    from zarrbridge.readers.base import IndexTimeout
+    from zarrbridge.readers.refkv_reader import _zarrify
+    steps = []
+
+    def blocking_read(i):
+        time.sleep(0.05)
+        steps.append(i)
+
+    async def fake(*a, **k):
+        loop = asyncio.get_running_loop()
+        for i in range(100):
+            await loop.run_in_executor(None, blocking_read, i)
+
+    monkeypatch.setattr(refkv.zarrify, "zarrify_async", fake)
+    with pytest.raises(IndexTimeout):
+        _zarrify(tmp_path / "x.czi", cfg, timeout=0.3)
+    n = len(steps)
+    assert 3 <= n <= 8          # a few reads happened, then the deadline
+    time.sleep(0.4)
+    assert len(steps) <= n + 1  # at most the in-flight read completed afterwards
+
+
 def test_timeout_is_opt_in(tmp_path, cfg, monkeypatch):
     # The builder and `zarrbridge index` never pass a timeout: they are the manual resolution.
     import time
@@ -96,6 +124,24 @@ def test_timeout_is_opt_in(tmp_path, cfg, monkeypatch):
     assert RefkvReader().open(p, cfg).identity.extras["format"] == "tiff"
 
 
+def test_cli_index_ignores_open_timeout(tmp_path, monkeypatch):
+    # `zarrbridge index` is the recovery command the unindexed reason names: it must not time out.
+    import time
+    import zarrbridge.readers.refkv_reader as rr
+    from zarrbridge.cli import main
+    real = rr._zarrify
+
+    def slow(path, config, timeout):
+        assert timeout is None
+        time.sleep(0.3)
+        return real(path, config, timeout)
+    monkeypatch.setattr(rr, "_zarrify", slow)
+    monkeypatch.setenv("ZB_LIMITS_OPEN_TIMEOUT_S", "0.05")  # whatever spelling tests/test_config.py shows for a nested limits field
+    p = make_tiff(tmp_path / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    assert main(["--cache-mode", "central", "--central-root", str(tmp_path / "c"), "index", str(p)]) == 0
+    assert list((tmp_path / "c").rglob("index.vzip"))
+
+
 def test_registry_does_not_swallow_timeout(tmp_path, cfg, monkeypatch):
     import zarrbridge.readers.refkv_reader as rr
     from zarrbridge.readers.base import IndexTimeout
@@ -113,8 +159,8 @@ def test_registry_does_not_swallow_timeout(tmp_path, cfg, monkeypatch):
 Run: `pixi run -e test test tests/test_refkv_reader.py::test_zarrify_timeout_cancels_and_raises`
 Expected: FAIL with `ImportError: cannot import name 'IndexTimeout'`
 
-Run: `pixi run -e test test tests/test_refkv_reader.py::test_timeout_is_opt_in tests/test_refkv_reader.py::test_registry_does_not_swallow_timeout`
-Expected: FAIL with `TypeError` (unexpected keyword `timeout`)
+Run: `pixi run -e test test tests/test_refkv_reader.py -k "opt_in or swallow or cli_index or cancel_stops"`
+Expected: FAIL with `TypeError` (unexpected keyword `timeout`) and `ImportError` for `IndexTimeout`
 
 - [ ] **Step 3: Implement `run_sync_with_timeout` in `zarrbridge/_sync.py`**
 
@@ -153,7 +199,8 @@ git commit -m "feat: give up zarrifying after limits.open_timeout_s"
 **Interfaces:**
 - Consumes: `IndexTimeout`, `LimitsConfig.open_timeout_s`, `open_retry_s` from Task 1.
 - Produces: `class StillOpening(Exception)` with attributes `started_at: float` (epoch seconds).
-- Produces: `DatasetResolver.dataset(path: Path, wait: float | None = None) -> Dataset`, a blocking call that routes run through `asyncio.to_thread` (Task 3). Starts an open if none is in flight, joins the in-flight one otherwise, waits up to `wait` seconds (None: until the open ends, which the Task 1 deadline bounds), then returns the dataset, or raises `StillOpening`, `IndexTimeout`, or `ReaderRejected`.
+- Produces: `DatasetResolver.dataset(path: Path, wait: float | None = None) -> Dataset`, the blocking form for the CLI and tests. Starts an open if none is in flight, joins the in-flight one otherwise, waits up to `wait` seconds (None: until the open ends, which the Task 1 deadline bounds), then returns the dataset, or raises `StillOpening`, `IndexTimeout`, or `ReaderRejected`.
+- Produces: `async def DatasetResolver.dataset_async(path: Path, wait: float | None = None) -> Dataset`, the same contract for the routes. It holds no thread while waiting: each `_Opening` keeps `waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future]]`; `dataset_async` registers a future and awaits it under `asyncio.wait_for(..., wait)`; the opener thread, after recording the outcome, calls `loop.call_soon_threadsafe(fut.set_result, None)` for every waiter. Only `Dataset.open` itself runs on a thread.
 - Produces: `DatasetResolver.cached(path: Path) -> Dataset | None` (LRU lookup, no open, no source check).
 - Produces: `DatasetResolver.open_state(path: Path) -> tuple[str, dict] | None`: `("indexing", {"started_at": float})` while an open is in flight; `("unindexed", {"reason": str})` for `open_retry_s` after an `IndexTimeout`; `("unservable", {"reason": str})` for the existing 30 s after a `ReaderRejected`; else None.
 - Keeps: `open_count`, `close_idle`, `root_dir`, `split`, `check_trusted` unchanged. `ensure_pyramid("auto", queue)` still runs once per successful open.
@@ -206,6 +253,29 @@ def test_dataset_with_wait_reports_still_opening(tmp_path, monkeypatch):
     assert r.dataset(p) is r.cached(p) and r.open_state(p) is None
 
 
+def test_dataset_async_holds_no_thread(tmp_path, monkeypatch):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    p = make_mrc(tmp_path / "a.mrc", (16, 16, 16))
+    monkeypatch.setattr(Dataset, "open", _slow_open(0.4, []))
+    r = DatasetResolver(_cfg(tmp_path))
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(1))
+        waits = [asyncio.create_task(r.dataset_async(p)) for _ in range(20)]
+        await asyncio.sleep(0.05)
+        t0 = loop.time()
+        await loop.run_in_executor(None, lambda: None)   # the one pool thread is free: nobody is parked in it
+        assert loop.time() - t0 < 0.2
+        got = await asyncio.gather(*waits)
+        assert all(g is got[0] for g in got)
+        r._lru.clear()
+        with pytest.raises(StillOpening):
+            await r.dataset_async(p, wait=0.05)
+    asyncio.run(main())
+
+
 def test_unindexed_is_retried_after_open_retry_s(tmp_path, monkeypatch):
     p = make_mrc(tmp_path / "a.mrc", (16, 16, 16))
     calls = []
@@ -238,7 +308,9 @@ Expected: FAIL with `ImportError: cannot import name 'StillOpening'`
 
 Add `self._opening: dict[Path, _Opening]` where `_Opening` is a small class with `started_at: float`, `done: threading.Event`, `result: Dataset | None`, `error: BaseException | None`. `dataset()` under `self._lock`: return the LRU hit as today; otherwise find or create the `_Opening`, and if created start `threading.Thread(target=self._open, args=(path, opening), name=f"zarrbridge-open", daemon=True)`. Outside the lock wait `opening.done.wait(wait)`; not done raises `StillOpening(opening.started_at)`; done re-raises `opening.error` or returns `opening.result`. `_open` runs `Dataset.open(path, self.config)`, then under the lock inserts into the LRU (closing a racing duplicate as the current code does), evicts past `max_open_datasets`, records `IndexTimeout` in `self._unindexed[path] = (str(e), time.time())` and `ReaderRejected` in `self._rejected` as today, deletes the `_Opening`, and sets `done`. Call `ensure_pyramid("auto", self.queue)` after insertion when `build.auto`. Before starting an open, consult `_unindexed` within `open_retry_s` and `_rejected` within 30 s and raise the remembered error instead.
 
-- [ ] **Step 4: Implement `cached` and `open_state`**
+- [ ] **Step 4: Implement `dataset_async`, `cached` and `open_state`**
+
+`dataset_async` shares the start-or-join step with `dataset` (factor it into `_start_or_join(path) -> _Opening | Dataset`), then awaits its future instead of `done.wait`. Remembered errors (`_unindexed`, `_rejected`) are raised before anything is scheduled.
 
 - [ ] **Step 5: Run the resolver and server tests**
 
@@ -263,7 +335,7 @@ git commit -m "feat: open datasets in the background, once per path, and remembe
 - Test: `tests/test_server.py`
 
 **Interfaces:**
-- Consumes: `resolver.dataset(path, wait=...)`, `resolver.open_state(path)`, `StillOpening`, `IndexTimeout` from Tasks 1 and 2. Both routes are `async def`, so every `resolver.dataset` call is `await asyncio.to_thread(resolver.dataset, path, wait)`; the event loop must never wait on an open.
+- Consumes: `resolver.dataset_async(path, wait=...)`, `resolver.open_state(path)`, `StillOpening`, `IndexTimeout` from Tasks 1 and 2. Both routes are `async def` and await `dataset_async`; no route calls the blocking `dataset`, and no thread is parked while a request waits for an open.
 - Produces: the pending status JSON, status 200: `{"path": str, "reader": None, "reader_reason": None, "classification": "pending", "images": [], "levels": {"state": "indexing", "built": 0, "planned": None, "progress": 0.0, "eta_s": None, "reason": "reading the file's structure; gives up after {open_timeout_s:.0f} s", "elapsed_s": float}, "cache": {"mode": str, "dir": str, "bytes": 0, "fingerprint": "missing", "mismatch": None, "writable": bool}, "advice": []}`.
 - Produces: the unindexed status JSON, status 200: same shape with `"classification": "unindexed"`, `"levels": {"state": "unindexed", "built": 0, "planned": None, "progress": 0.0, "eta_s": None, "reason": <IndexTimeout message>}`.
 - Produces: `key_handler` answers `422` with body `unindexed: <message>` for a timed-out file, as it does `unservable: ...` today.
@@ -323,14 +395,15 @@ def test_pending_open_does_not_block_other_requests(tmp_path, monkeypatch):
     _slow_zarrify(monkeypatch, 1.5)
     c = TestClient(create_app(cfg_root("data", tmp_path / "data")))
     done = []
-    t = threading.Thread(target=lambda: done.append(c.get("/data/a.ome.tif/zarr.json").status_code))
-    t.start()
-    time.sleep(0.2)                       # the key request is now waiting on the open
+    ts = [threading.Thread(target=lambda: done.append(c.get("/data/a.ome.tif/zarr.json").status_code)) for _ in range(40)]
+    [t.start() for t in ts]
+    time.sleep(0.3)                       # 40 key requests are now waiting on one open
     t0 = time.time()
     assert c.get("/data/b.mrc/zarr.json").status_code == 200 and c.get("/_health").status_code == 200
-    assert time.time() - t0 < 0.5         # served while a.ome.tif was still opening
-    t.join()
-    assert done == [200]
+    assert c.get("/_status/data/a.ome.tif").json()["levels"]["state"] == "indexing"
+    assert time.time() - t0 < 0.5         # served while a.ome.tif was still opening, with no pool to exhaust
+    [t.join() for t in ts]
+    assert done == [200] * 40
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -340,15 +413,15 @@ Expected: FAIL (`pending_shape` blocks and asserts on elapsed time; `unindexed` 
 
 - [ ] **Step 3: Rewrite the `status` route**
 
-Call `await asyncio.to_thread(resolver.dataset, path, config.limits.open_grace_s)`. On `StillOpening` build the pending JSON (`elapsed_s = time.time() - e.started_at`, cache fields from `cache_dir_for(path, config)` and `cache_writable`). On `IndexTimeout` build the unindexed JSON. Keep the `ReaderRejected` branch as it is. Note `IndexTimeout` is a `ReaderRejected`, so catch it first.
+Call `await resolver.dataset_async(path, wait=config.limits.open_grace_s)`. On `StillOpening` build the pending JSON (`elapsed_s = time.time() - e.started_at`, cache fields from `cache_dir_for(path, config)` and `cache_writable`). On `IndexTimeout` build the unindexed JSON. Keep the `ReaderRejected` branch as it is. Note `IndexTimeout` is a `ReaderRejected`, so catch it first.
 
 - [ ] **Step 4: Update `key_handler`**
 
-`await asyncio.to_thread(resolver.dataset, path)` with no wait (the Task 1 deadline bounds it); catch `IndexTimeout` before `ReaderRejected` and return `PlainTextResponse(f"unindexed: {e}", status_code=422)`.
+`await resolver.dataset_async(path)` with no wait (the Task 1 deadline bounds it); catch `IndexTimeout` before `ReaderRejected` and return `PlainTextResponse(f"unindexed: {e}", status_code=422)`.
 
 - [ ] **Step 5: Update the spec**
 
-§8.4: add `unindexed` to the state set with one sentence: "`unindexed` is terminal: the open hit `limits.open_timeout_s`; the file is too big to index automatically and must be indexed manually with `zarrbridge index`, after which the saved index makes the next open fast." Add: "`_status` never blocks for longer than `limits.open_grace_s`; while a dataset is being opened it reports `indexing` with `elapsed_s`. Opens run on worker threads; the request loop is never held by one." Also: "`limits.open_timeout_s` applies to the server only. `zarrbridge build` and `zarrbridge index` have no deadline: they are how a file the server gave up on gets indexed." §8.6: add `limits.open_timeout_s` (60 s; the zarrify is cancelled, no work continues), `open_grace_s` (2 s), `open_retry_s` (60 s; a timed-out file is not reopened sooner), `index_save_after_s` (5 s; see Task 4).
+§8.4: add `unindexed` to the state set with one sentence: "`unindexed` is terminal: the open hit `limits.open_timeout_s`; the file is too big to index automatically and must be indexed manually with `zarrbridge index`, after which the saved index makes the next open fast." Add: "`_status` never blocks for longer than `limits.open_grace_s`; while a dataset is being opened it reports `indexing` with `elapsed_s`. Opens run on worker threads; requests waiting for one hold neither the loop nor a thread." In §8.6 under `open_timeout_s`: "cancellation stops the read walk (at most `readers.refkv.connections` in-flight reads finish); a projection already running completes." Also: "`limits.open_timeout_s` applies to the server only. `zarrbridge build` and `zarrbridge index` have no deadline: they are how a file the server gave up on gets indexed." §8.6: add `limits.open_timeout_s` (60 s; the read walk is cancelled), `open_grace_s` (2 s), `open_retry_s` (60 s; a timed-out file is not reopened sooner), `index_save_after_s` (5 s; see Task 4).
 
 - [ ] **Step 6: Run the whole suite**
 
@@ -425,6 +498,7 @@ git commit -m "feat: save the refkv index after a slow server-side open"
 - Consumes: zarrbridge `_status` shapes from Task 3.
 - Produces: `zarrproxy.PENDING_STATES = frozenset({"indexing", "unindexed"})`.
 - Produces: `virtual_node(sock, abs_path, info, key="")` at the root first GETs `/_status`; when it is 200 and `levels.state in PENDING_STATES` it returns `{"info": {**info, "virtual_zarr": True, "zarrbridge_state": state}, "files": []}` without requesting `zarr.json`. Any other status answer falls through to today's logic. Below the root nothing changes.
+- Produces: `virtual_node` raises `ValueError` only for a 4xx root `zarr.json` (zarrbridge saying the file is not servable: 404, 415, 422); any 5xx calls `resp.raise_for_status()`, which raises `httpx.HTTPStatusError`, an `httpx.HTTPError`.
 - Produces: `_virtual_node` maps `ValueError` to the plain file as today, and `httpx.HTTPError`, `WorkerDead`, `WorkerError` to `HTTPException(status_code=503, detail=f"zarrbridge unavailable: {e}")`.
 - Produces: `FileOrFolder.zarrbridge_state?: string` in `shared.types.ts`.
 
@@ -460,16 +534,33 @@ async def test_virtual_node_root_while_indexing(monkeypatch):
         _mock_client(monkeypatch, lambda req: (_ for _ in ()).throw(httpx.ConnectError("gone")))
         r = zarr_app.get("/api/files/share", params={"subpath": "data/tiny.tif"})
         assert r.status_code == 503 and "zarrbridge unavailable" in r.text
+
+    def test_upstream_5xx_is_503_not_plain_file(self, zarr_app, monkeypatch):
+        import httpx
+
+        def handler(req):
+            if req.url.path == "/_status":
+                return httpx.Response(200, json={"levels": {"state": "native"}})
+            return httpx.Response(503, text="worker restarting")
+        _mock_client(monkeypatch, handler)
+        r = zarr_app.get("/api/files/share", params={"subpath": "data/tiny.tif"})
+        assert r.status_code == 503
+
+    def test_upstream_4xx_is_plain_file(self, zarr_app, monkeypatch):
+        import httpx
+        _mock_client(monkeypatch, lambda req: httpx.Response(422, text="unservable: no reader"))
+        r = zarr_app.get("/api/files/share", params={"subpath": "data/tiny.tif"})
+        assert r.status_code == 200 and r.json()["info"].get("virtual_zarr") is None and "files" not in r.json()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `.pixi/envs/test/bin/python -m pytest tests/test_zarrproxy.py -k "while_indexing or transport_error"`
-Expected: FAIL (`seen` includes `/zarr.json`; the second returns 200 with the plain file)
+Run: `.pixi/envs/test/bin/python -m pytest tests/test_zarrproxy.py -k "while_indexing or transport_error or upstream"`
+Expected: FAIL (`seen` includes `/zarr.json`; the 503 cases return 200 with the plain file; the 4xx case passes already)
 
 - [ ] **Step 3: Implement `PENDING_STATES` and the root pre-check in `virtual_node`**
 
-- [ ] **Step 4: Narrow the catch-all in `_virtual_node`**
+- [ ] **Step 4: In `virtual_node`, call `resp.raise_for_status()` when `resp.status_code >= 500` before the existing `ValueError`; narrow the catch-all in `_virtual_node`**
 
 Import `httpx` in `server.py` if not already imported; the `WorkerDead` and `WorkerError` names are already imported there (line 49).
 
@@ -571,30 +662,62 @@ git commit -m "feat: spinner and clear copy for every zarrbridge state"
 
 **Files:**
 - Modify: `frontend/src/components/ui/BrowsePage/FileBrowser.tsx:101-125, 269-300, 365-376`
+- Modify: `frontend/src/queries/zarrQueries.ts` (`shouldRefreshListing`)
+- Test: `frontend/src/__tests__/unitTests/zarrbridgeRefresh.test.ts` (new)
 
 **Interfaces:**
 - Consumes: `isZarrbridgeBusy`, `useZarrbridgeStatusQuery` from Task 6; `FileOrFolder.virtual_zarr` and `zarrbridge_state` from Task 5.
 - Produces: `isVirtualZarr = fileQuery.data?.currentFileOrFolder?.virtual_zarr === true` (no longer requires `isZarrDir`). The status query is enabled by `isVirtualZarr` alone.
 - Produces: the hint renders when `isVirtualZarr && (zarrbridgeStatusQuery.data || zarrbridgeStatusQuery.isError)`, passing `state` (or `'error'` with `reason = error.message` on a failed query) and `progress`.
 - Produces: `ZarrPreview` renders only when `isZarrDir && zarrMetadataQuery.data?.metadata`; `FileViewer` renders only when the item is a file, `!isZarrDir` and `!virtual_zarr`; when `isVirtualZarr && !isZarrDir` the main area below the hint is empty.
-- Produces: a `useEffect` keyed on `zarrbridgeStatusQuery.data?.levels?.state` that calls `fileQuery.refetch()` and `zarrMetadataQuery.refetch()` when the previous state was busy and the new one is not (track the previous value in a `useRef`).
+- Produces: one `useEffect` keyed on `[zarrbridgeStatusQuery.data?.levels?.state, fileQuery.data?.currentFileOrFolder?.zarrbridge_state]` that refreshes when `shouldRefreshListing(prevState, state, nodeState)` (below) is true, and does nothing otherwise:
+  - **Reconcile** (covers a first status answer that is already terminal): the listing's node carries a `zarrbridge_state` (it was returned pending, Task 5) and the status state is defined and not busy. The refreshed node has no `zarrbridge_state`, so this fires once. While `unindexed` it also fires once, so the node drops its pending flag and the `FileViewer` gate is the only thing keeping the hex dump away.
+  - **Transition** (covers `building` to `multiscale`, where `zarr.json` gains levels): the previous state, kept in a `useRef`, was busy and the new one is not.
+  - The refresh is `fileQuery.refetch()` and, when it resolves, `queryClient.invalidateQueries({ queryKey: ['zarr', 'metadata', fspName, path] })` with `useQueryClient()` from TanStack Query. Never call `zarrMetadataQuery.refetch()`: with `files` still empty it would run the query function and cache `metadata: null` as fresh for five minutes, and because the query key is path-only, enabling it later would not refetch. Invalidation only marks the entry stale, so a disabled query stays untouched and an enabled one refetches with the refreshed `files`.
+- Produces: `export function shouldRefreshListing(prevState: string | undefined, state: string | undefined, nodeState: string | undefined): boolean` in `zarrQueries.ts`: `state !== undefined && !isZarrbridgeBusy(state) && (nodeState !== undefined || (prevState !== undefined && isZarrbridgeBusy(prevState)))`.
 
-- [ ] **Step 1: Make the changes**
+- [ ] **Step 1: Write the failing test**
 
-- [ ] **Step 2: Type-check and lint**
+Add `frontend/src/__tests__/unitTests/zarrbridgeRefresh.test.ts`:
+
+```ts
+import { shouldRefreshListing } from '@/queries/zarrQueries';
+
+describe('shouldRefreshListing', () => {
+  it('refreshes a pending node as soon as the status is terminal, even on the first answer', () => {
+    expect(shouldRefreshListing(undefined, 'native', 'indexing')).toBe(true);
+    expect(shouldRefreshListing(undefined, 'unindexed', 'indexing')).toBe(true);
+  });
+  it('waits while the status is still busy or unknown', () => {
+    expect(shouldRefreshListing(undefined, 'indexing', 'indexing')).toBe(false);
+    expect(shouldRefreshListing('indexing', undefined, 'indexing')).toBe(false);
+  });
+  it('refreshes on a busy to terminal transition of a complete node', () => {
+    expect(shouldRefreshListing('building', 'multiscale', undefined)).toBe(true);
+    expect(shouldRefreshListing('native', 'native', undefined)).toBe(false);
+  });
+});
+```
+
+Run: `pixi run test-frontend -- src/__tests__/unitTests/zarrbridgeRefresh.test.ts`
+Expected: FAIL, `shouldRefreshListing` is not exported
+
+- [ ] **Step 2: Implement `shouldRefreshListing` in `zarrQueries.ts`, then make the `FileBrowser` changes above**
+
+- [ ] **Step 3: Run the test, type-check and lint**
 
 Run: `pixi run node-check && pixi run node-eslint-write && pixi run node-prettier-write`
 Expected: no new errors
 
-- [ ] **Step 3: Verify in the running app**
+- [ ] **Step 4: Verify in the running app**
 
 With the dev server running (`pixi run --no-install uvicorn fileglancer.server:app --host 0.0.0.0 --port 7878 --reload --ssl-keyfile /opt/certs/cert.key --ssl-certfile /opt/certs/cert.crt` so the editable zarrbridge is used), open `https://nextflow.int.janelia.org:7878/browse/nrs_dudman/classy_midbrain/EASIFISH/Gel2/stitching/g2_r0/Gel2_075x_GFP_Tpbg_633_Ribo550_nDapi.czi`.
 Expected: a spinner with "Reading image structure" for about 60 s, no hex dump, then the warning "Too large to index automatically" with the `zarrbridge index` command, and polling stops (no more `_status` lines in the server log). Open a small TIFF: no spinner flash, entries appear on first load. Confirm in `top` that the dataserver's reads stop within a few seconds of the timeout.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add frontend/src/components/ui/BrowsePage/FileBrowser.tsx
+git add frontend/src/components/ui/BrowsePage/FileBrowser.tsx frontend/src/queries/zarrQueries.ts frontend/src/__tests__/unitTests/zarrbridgeRefresh.test.ts
 git commit -m "feat: show zarrbridge progress for image files before their listing exists"
 ```
 
