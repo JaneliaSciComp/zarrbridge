@@ -132,7 +132,7 @@ Readers never write. Readers must be safe to open many times in one process (an 
 
 ### 5.4 `refkv` reader
 
-- `store = refkv.zarrify(path, policy=..., connections=...)` → `ReferenceStore`; `opened.store = refkv.zarr.store(store)`. Index persisted with `store.save_vzip(cache/index.vzip)` and reopened with `refkv.open(...)` when the fingerprint validates; pins from the store are copied into `identity.extras["pins"]` and re-verified against `stat` on open.
+- `store = refkv.zarrify(path, policy=..., connections=...)` → `ReferenceStore`; `opened.store = refkv.zarr.store(store)`. Index persisted with `store.save_vzip(cache/index.vzip)` and reopened with `refkv.open(..., policy=refkv.Policy(prefixes=(path.as_uri(),)))` when the fingerprint validates (an archive may read only the file it was written for; refkv ≥ 0.2.1 refuses local reads without a policy); pins from the store are copied into `identity.extras["pins"]` and re-verified against `stat` on open.
 - Covers CZI, ND2, LIF, NDPI, SVS, QPTIFF, IMS, DICOM, NIfTI, NRRD, FITS, OME-TIFF and TIFF that refkv accepts. refkv's own OME-Zarr 0.5 conventions (axes, units, scale/translation, `omero`, source metadata mirrors, multi-image hierarchies) are used as emitted; zarrbridge adds nothing to level-0 metadata.
 - Chunk values are references; zarr-python resolves them through the refkv store with refkv's `max_reads`/`max_concurrency` policy. Custom codecs refkv registers (`refkv.tiff_lzw`, `refkv.stream`, `packbits`, imagecodecs) are available to the transcode layer in-process; they are never exposed to clients (§6.2).
 - Dependency pinning: refkv is pre-1.0 and its spec changes weekly. Pin an exact version (git tag or commit) in `pyproject.toml`; record `refkv.__version__` in the fingerprint; CI runs against the pin only. The surface used is deliberately small: `zarrify`, `ReferenceStore.save_vzip`, `refkv.open`, `refkv.zarr.store`, pins, and `refkv.compose.{mount,overlay}` (optional, §6.3).
@@ -160,7 +160,7 @@ The `Opened.store` from the reader. For `mrc` and `tiff` it is a custom `Store` 
 
 ### 6.2 `TranscodeStore` (codec policy)
 
-- Allowlist of client-decodable codecs: `bytes`, `gzip`, `zstd`, `blosc`, `crc32c`, `transpose`, `sharding_indexed`. Configurable.
+- Allowlist of client-decodable codecs: `bytes`, `gzip`, `zstd`, `blosc`, `crc32c`, `transpose`, `sharding_indexed`. Configurable. The check descends into a `sharding_indexed` codec's inner and index chains, since refkv wraps TIFF strips in shards and the codec a viewer cannot decode sits inside.
 - For any array whose codec chain contains a codec outside the allowlist, this layer rewrites the array `zarr.json` to `[bytes(endian=little), zstd(level=3)]` (configurable) and, on chunk `get`, decodes through zarr-python's codec pipeline for the original chain and re-encodes. Arrays already on the allowlist pass through byte-for-byte (a refkv reference to a raw or gzip strip is sent as stored).
 - Decode concurrency is bounded per process (`limits.max_decodes`, default `os.cpu_count()`); excess requests wait.
 

@@ -49,7 +49,10 @@ class RefkvReader:
                 and side.get("header_hash") == hh and side.get("refkv_version") == refkv.__version__ \
                 and side.get("path") == str(path) and (cache_dir / side.get("file", "")).is_file():
             try:
-                rs = refkv.open(str(cache_dir / side["file"]), binding=side.get("binding", "vzip"))
+                # A saved index may read exactly the file it was written for (refkv >= 0.2.1 refuses
+                # local reads from an archive without a policy).
+                rs = refkv.open(str(cache_dir / side["file"]), binding=side.get("binding", "vzip"),
+                                policy=refkv.Policy(prefixes=(path.as_uri(),)))
                 reason = f"index {side['file']}"
                 pins = side.get("pins", [])
                 fmt = side.get("format")
