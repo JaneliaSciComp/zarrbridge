@@ -134,3 +134,16 @@ def test_unwritable_beside_cache_is_served_but_never_built(tmp_path, cfg_min4):
         q.shutdown()
     finally:
         cache.chmod(0o755)
+
+
+def test_slow_open_saves_index(tmp_path, cfg):
+    from tests.conftest import make_tiff, stack_u16
+    p = make_tiff(tmp_path / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    cfg.limits.index_save_after_s = 0
+    ds = Dataset.open(p, cfg)
+    assert (ds.cache_dir / "index.json").exists() and any(ds.cache_dir.glob("index.vzip"))
+    ds.close()
+    cfg.limits.index_save_after_s = 3600
+    ds2 = Dataset.open(make_tiff(tmp_path / "b.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32)), cfg)
+    assert not (ds2.cache_dir / "index.json").exists()
+    ds2.close()

@@ -23,6 +23,19 @@ from zarrbridge.store.transcode import TranscodeStore
 _log = logging.getLogger("zarrbridge.dataset")
 
 
+def _save_index_if_slow(path: Path, opened: Opened, config: Any, cache_dir: Path, elapsed: float) -> None:
+    """A server-side zarrify that took a while is paid once: persist its refkv index beside the cache so the
+    next open reads the index instead of the file. Needs a writable cache; failures only log."""
+    from zarrbridge.readers.refkv_reader import has_unsaved_index, save_index
+    if elapsed < config.limits.index_save_after_s or not has_unsaved_index(opened) or not cache_writable(cache_dir):
+        return
+    try:
+        out = save_index(opened, cache_dir, config.readers.refkv.index_binding)
+        _log.info("%s: saved refkv index %s after a %.1fs open", path, out, elapsed)
+    except Exception as e:  # noqa: BLE001
+        _log.warning("%s: could not save refkv index: %s", path, e)
+
+
 class Dataset:
     def __init__(self, path: Path, config: Any, opened: Opened, cache_dir: Path, cache_mode: str) -> None:
         self.path = Path(path)
@@ -50,9 +63,12 @@ class Dataset:
     def open(cls, path: Path | str, config: Any) -> "Dataset":
         path = Path(path).resolve()
         cache_dir, mode = cache_dir_for(path, config)
+        t0 = time.time()
         opened = open_dataset_reader(path, config, cache_dir=cache_dir, timeout=config.limits.open_timeout_s or None)
-        _log.info("open %s reader=%s classification=%s reason=%s", path, opened.reader_name,
-                  opened.classification.state, opened.reader_reason)
+        elapsed = time.time() - t0
+        _log.info("open %s reader=%s classification=%s reason=%s in %.1fs", path, opened.reader_name,
+                  opened.classification.state, opened.reader_reason, elapsed)
+        _save_index_if_slow(path, opened, config, cache_dir, elapsed)
         return cls(path, config, opened, cache_dir, mode)
 
     # -- validity -----------------------------------------------------------------------------------------------
