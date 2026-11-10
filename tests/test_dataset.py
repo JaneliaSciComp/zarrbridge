@@ -19,7 +19,8 @@ def test_native_only_then_multiscale(tmp_path, cfg_min4):
     p = make_mrc(tmp_path / "a.mrc", (36, 20, 12), fill=canonical)
     ds = Dataset.open(p, cfg_min4)
     meta = json.loads(get(ds.store, "zarr.json"))
-    assert meta["attributes"]["zarrbridge"]["levels"] == "native" and "cache missing" in meta["attributes"]["zarrbridge"]["reason"]
+    assert meta["attributes"]["zarrbridge"]["levels"] == "native"
+    assert meta["attributes"]["zarrbridge"]["reason"] == "Automatic builds are off on this server."
     assert ds.status()["levels"]["state"] == "native" and ds.status()["cache"]["fingerprint"] == "missing"
     assert get(ds.store, "1/c/0/0/0") is None and ds.source_of("0/c/0/0/0") == "native"
     assert build(p, cfg_min4) == BUILT
@@ -83,7 +84,10 @@ def test_ensure_pyramid_auto_respects_max_bytes(tmp_path):
     ds.ensure_pyramid("auto", q)
     st = ds.status(q)
     # Nothing is queued, so the state must be terminal: a client polls on "queued".
-    assert st["levels"]["state"] == "native" and "zarrbridge build" in st["levels"]["reason"]
+    assert st["levels"]["state"] == "native"
+    assert st["pyramid"]["state"] == "not_built" and "automatic build limit" in st["pyramid"]["reason"]
+    assert ";" not in st["pyramid"]["reason"] and st["pyramid"]["reason"].endswith(".")
+    assert st["index"]["state"] == "none"  # MRC: headers read directly, no refkv index
     cfg2 = Config.load(env={}, overrides={"build": {"min_axis": 4, "max_levels": 2}})
     ds2 = Dataset.open(p, cfg2)
     assert ds2.ensure_pyramid("now") == BUILT and ds2.validity == "valid"
@@ -130,7 +134,7 @@ def test_unwritable_beside_cache_is_served_but_never_built(tmp_path, cfg_min4):
         ds.ensure_pyramid("auto", q)
         st = ds.status(q)
         assert st["cache"] == {**st["cache"], "mode": "beside", "writable": False}
-        assert st["levels"]["state"] == "native" and "not writable" in st["levels"]["reason"]
+        assert st["levels"]["state"] == "native" and "not writable" in st["pyramid"]["reason"]
         q.shutdown()
     finally:
         cache.chmod(0o755)
@@ -147,3 +151,23 @@ def test_slow_open_saves_index(tmp_path, cfg):
     ds2 = Dataset.open(make_tiff(tmp_path / "b.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32)), cfg)
     assert not (ds2.cache_dir / "index.json").exists()
     ds2.close()
+
+
+def test_status_index_and_pyramid_blocks(tmp_path, cfg, cfg_min4):
+    from tests.conftest import make_tiff, stack_u16
+    p = make_tiff(tmp_path / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    cfg.limits.index_save_after_s = 0
+    st = Dataset.open(p, cfg).status()
+    assert st["index"]["state"] == "saved" and st["index"]["bytes"] > 0 and st["index"]["reason"] is None
+    cfg.limits.index_save_after_s = 3600
+    st = Dataset.open(make_tiff(tmp_path / "b.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32)), cfg).status()
+    assert st["index"]["state"] == "unsaved" and st["index"]["bytes"] is None
+    m = make_mrc(tmp_path / "c.mrc", (16, 16, 16))
+    ds = Dataset.open(m, cfg_min4)
+    st = ds.status()
+    assert st["index"]["state"] == "none"
+    assert st["pyramid"]["state"] == "not_built" and st["pyramid"]["bytes"] == 0
+    assert ds.ensure_pyramid("now") == BUILT
+    st = ds.status()
+    assert st["pyramid"]["state"] == "built" and st["pyramid"]["levels"] >= 2 and st["pyramid"]["bytes"] > 0
+    assert st["pyramid"]["reason"] is None

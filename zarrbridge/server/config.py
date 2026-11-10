@@ -15,6 +15,19 @@ _UNITS = {"": 1, "b": 1, "k": 10**3, "m": 10**6, "g": 10**9, "t": 10**12,
           "kib": 2**10, "mib": 2**20, "gib": 2**30, "tib": 2**40}
 
 
+def human_bytes(n: int | float) -> str:
+    """`n` bytes in the largest binary unit that keeps it above 1: 20 GiB, 1.5 MiB, 512 B."""
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    i = 0
+    while abs(n) >= 1024 and i < len(units) - 1:
+        n /= 1024
+        i += 1
+    if i == 0:
+        return f"{int(n)} B"
+    text = f"{n:.1f}".rstrip("0").rstrip(".")
+    return f"{text} {units[i]}"
+
+
 def parse_bytes(s: str | int) -> int:
     if isinstance(s, int):
         return s

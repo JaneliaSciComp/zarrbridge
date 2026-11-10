@@ -21,9 +21,8 @@ class IndexTimeout(ReaderRejected):
 
     def __init__(self, path, timeout_s: float) -> None:
         self.timeout_s = timeout_s
-        super().__init__(f"indexing did not finish within {timeout_s:.0f} s, so this file is too big to index "
-                         f"automatically. It needs to be indexed manually: run `zarrbridge index {path}`; "
-                         f"the saved index makes later opens fast.")
+        super().__init__(f"Indexing did not finish within {timeout_s:.0f} s, so this file is too big to index "
+                         f"automatically. It needs to be indexed manually with `zarrbridge index {path}`.")
 
 
 @dataclass(frozen=True)

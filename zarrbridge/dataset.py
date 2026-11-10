@@ -15,6 +15,7 @@ from zarrbridge.cache.layout import BUILD_JSON, FINGERPRINT, cache_bytes, cache_
 from zarrbridge.cache.locks import is_locked
 from zarrbridge.readers.base import Opened
 from zarrbridge.readers.registry import open_dataset_reader
+from zarrbridge.server.config import human_bytes
 from zarrbridge.store.keys import array_path_of, level_of
 from zarrbridge.store.metadata import MetadataStore
 from zarrbridge.store.overlay import PyramidOverlay
@@ -34,6 +35,11 @@ def _save_index_if_slow(path: Path, opened: Opened, config: Any, cache_dir: Path
         _log.info("%s: saved refkv index %s after a %.1fs open", path, out, elapsed)
     except Exception as e:  # noqa: BLE001
         _log.warning("%s: could not save refkv index: %s", path, e)
+
+
+# levels.state (the polling contract) -> what the pyramid line of a UI says
+_PYRAMID_STATE = {"native": "not_built", "indexing": "queued", "queued": "queued", "building": "building",
+                  "multiscale": "built", "failed": "failed", "unservable": "not_built"}
 
 
 class Dataset:
@@ -158,7 +164,7 @@ class Dataset:
         if self.validity == "valid":
             plan = (self._fingerprint or {}).get("plan", {})
             if not plan.get("images"):
-                return "native", {"reason": "no level above native in the plan (image smaller than build.min_axis)"}
+                return "native", {"reason": "The image is too small to need one."}
             return "multiscale", {"reason": None}
         bj = self._build_json()
         if is_locked(self.cache_dir):
@@ -168,7 +174,7 @@ class Dataset:
                 st.update(built=bj.get("level", 0) - 1, progress=round(done / total, 3) if total else 0.0, eta_s=bj.get("eta_s"))
             return ("indexing" if bj is None else "building"), st
         if queue is not None and queue.pending(self.cache_dir):
-            return "queued", {"reason": "auto-build queued"}
+            return "queued", {"reason": None}
         # Terminal states from here on: indexing/queued/building are the only
         # ones a client should poll, so a build that will not happen or did
         # not succeed must never be reported as one of them.
@@ -176,14 +182,19 @@ class Dataset:
             return "failed", {"reason": bj.get("error")}
         rc = queue.failure(self.cache_dir) if queue is not None else None
         if rc is not None:
-            return "failed", {"reason": f"auto-build exited {rc} without writing a result"}
-        reason = f"cache {self.validity}" + (f" ({self.mismatch} mismatch)" if self.mismatch else "")
+            return "failed", {"reason": f"The automatic build exited with code {rc} without writing a result."}
+        # Why no pyramid is coming, as one plain sentence (the UI shows it verbatim).
         if not cache_writable(self.cache_dir):
-            reason += "; cache directory not writable by this user: its owner must run `zarrbridge build`"
+            reason = "The cache directory is not writable by this user."
         elif self.config.build.auto and self.opened.identity.size > self.config.build.auto_max_bytes:
-            reason += "; file exceeds build.auto_max_bytes: run `zarrbridge build` or submit a job"
+            reason = f"The file is larger than the automatic build limit of {human_bytes(self.config.build.auto_max_bytes)}."
         elif not self.config.build.auto:
-            reason += "; auto-build off: run `zarrbridge build`"
+            reason = "Automatic builds are off on this server."
+        elif self.validity in ("stale", "outdated", "incompatible"):
+            what = f" ({self.mismatch} changed)" if self.mismatch else ""
+            reason = f"The existing pyramid is out of date{what}."
+        else:
+            reason = None
         return "native", {"reason": reason}
 
     def _build_json(self) -> dict | None:
@@ -201,6 +212,12 @@ class Dataset:
         levels = {"state": state, "built": extra.get("built", planned if state == "multiscale" else 0),
                   "planned": planned, "progress": extra.get("progress", 1.0 if state == "multiscale" else 0.0),
                   "eta_s": extra.get("eta_s"), "reason": extra.get("reason")}
+        index = self._index_status()
+        total = cache_bytes(self.cache_dir) if self.cache_dir.exists() else 0
+        pyramid = {"state": _PYRAMID_STATE[state], "reason": levels["reason"] if state != "multiscale" else None,
+                   "progress": levels["progress"], "eta_s": levels["eta_s"], "built": levels["built"],
+                   "planned": planned, "levels": planned if state == "multiscale" else None,
+                   "bytes": max(0, total - (index["bytes"] or 0))}
         advice = ["xy_only"] if self.opened.classification.state == "servable_2d" else []
         if self.opened.classification.state != "unservable" and self.opened.classification.reason:
             advice.append(self.opened.classification.reason.split(":")[0])
@@ -209,13 +226,28 @@ class Dataset:
             "classification": self.opened.classification.state,
             "images": [{"path": i.path, "shape": list(i.shape), "dtype": i.dtype, "axes": [a["name"] for a in i.axes],
                         "native_chunks": list(i.native_chunks), "levels": i.levels} for i in self.opened.images],
-            "levels": levels,
+            "levels": levels, "index": index, "pyramid": pyramid,
             "cache": {"mode": self.cache_mode, "dir": str(self.cache_dir),
                       "bytes": cache_bytes(self.cache_dir) if self.cache_dir.exists() else 0,
                       "fingerprint": self.validity, "mismatch": self.mismatch,
                       "writable": cache_writable(self.cache_dir)},
             "advice": advice,
         }
+
+    def _index_status(self) -> dict:
+        """The refkv index: `saved` beside the cache (opens are fast), `unsaved` (zarrified in memory each
+        open), or `none` for readers that read headers directly (tiff, mrc)."""
+        if self.opened.reader_name != "refkv":
+            return {"state": "none", "bytes": None, "reason": None}
+        from zarrbridge.readers.refkv_reader import _read_sidecar
+        side = _read_sidecar(self.cache_dir)
+        if side and (self.cache_dir / side.get("file", "")).is_file():
+            try:
+                size = (self.cache_dir / side["file"]).stat().st_size
+            except OSError:
+                size = None
+            return {"state": "saved", "bytes": size, "reason": None}
+        return {"state": "unsaved", "bytes": None, "reason": None}
 
     # -- building (§12) ---------------------------------------------------------------------------------------
     def ensure_pyramid(self, mode: Literal["never", "auto", "now"] = "auto", queue: AutoBuildQueue | None = None) -> int | None:

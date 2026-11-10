@@ -155,13 +155,18 @@ def _routes(config: Config, resolver: DatasetResolver, queue: AutoBuildQueue | N
             return resolver.check_trusted(unquote(hdr)), request.path_params.get("key", "").strip("/")
         return resolver.split(request.path_params["root"], request.path_params.get("path", ""))
 
-    def _not_open_status(path: Path, classification: str, state: str, reason: str, **levels: Any) -> dict:
-        """The status of a dataset that is not open: pending (still indexing) or unindexed (gave up)."""
+    def _not_open_status(path: Path, classification: str, state: str, reason: str, *, index_state: str,
+                         **levels: Any) -> dict:
+        """The status of a dataset that is not open: pending (still indexing), unindexed (gave up) or
+        unservable (rejected). The index block carries the story; there is no pyramid to speak of."""
         cache_dir, mode = cache_dir_for(path, config)
         return {"path": str(path), "reader": None, "reader_reason": None, "classification": classification,
                 "images": [],
                 "levels": {"state": state, "built": 0, "planned": None, "progress": 0.0, "eta_s": None,
                            "reason": reason, **levels},
+                "index": {"state": index_state, "bytes": None, "reason": reason},
+                "pyramid": {"state": "not_built", "reason": None, "progress": 0.0, "eta_s": None, "built": 0,
+                            "planned": None, "levels": None, "bytes": 0},
                 "cache": {"mode": mode, "dir": str(cache_dir), "bytes": 0, "fingerprint": "missing",
                           "mismatch": None, "writable": cache_writable(cache_dir)},
                 "advice": []}
@@ -179,13 +184,14 @@ def _routes(config: Config, resolver: DatasetResolver, queue: AutoBuildQueue | N
         except StillOpening as e:
             return JSONResponse(_not_open_status(
                 path, "pending", "indexing",
-                f"reading the file's structure; gives up after {config.limits.open_timeout_s:.0f} s",
-                elapsed_s=round(time.time() - e.started_at, 1)))
+                f"Reading the file's structure. Gives up after {config.limits.open_timeout_s:.0f} s.",
+                index_state="reading", elapsed_s=round(time.time() - e.started_at, 1)))
         except IndexTimeout as e:
-            return JSONResponse(_not_open_status(path, "unindexed", "unindexed", str(e)))
+            return JSONResponse(_not_open_status(path, "unindexed", "unindexed", str(e), index_state="failed"))
         except ReaderRejected as e:
-            return JSONResponse({"path": str(path), "classification": "unservable", "reader": None,
-                                 "reader_reason": str(e), "levels": {"state": "unservable", "reason": str(e)}}, status_code=200)
+            body = _not_open_status(path, "unservable", "unservable", str(e), index_state="failed")
+            body["reader_reason"] = str(e)
+            return JSONResponse(body)
         ds.recheck()
         return JSONResponse(ds.status(queue))
 
