@@ -82,7 +82,33 @@ def test_ensure_pyramid_auto_respects_max_bytes(tmp_path):
     q = AutoBuildQueue(cfg, popen=lambda *a, **k: (_ for _ in ()).throw(AssertionError("spawned")))
     ds.ensure_pyramid("auto", q)
     st = ds.status(q)
-    assert st["levels"]["state"] == "queued" and "zarrbridge build" in st["levels"]["reason"]
+    # Nothing is queued, so the state must be terminal: a client polls on "queued".
+    assert st["levels"]["state"] == "native" and "zarrbridge build" in st["levels"]["reason"]
     cfg2 = Config.load(env={}, overrides={"build": {"min_axis": 4, "max_levels": 2}})
     ds2 = Dataset.open(p, cfg2)
     assert ds2.ensure_pyramid("now") == BUILT and ds2.validity == "valid"
+
+
+def test_auto_build_crash_is_reported_as_failed(tmp_path):
+    # The builder writes build.json {"state": "failed"} itself when it can; a
+    # subprocess that dies before that (OOM kill, spawn failure) must still end
+    # in "failed" rather than quietly dropping back to "native".
+    class DeadProc:
+        returncode = 137
+
+        def communicate(self):
+            return "", "Killed"
+
+    p = make_mrc(tmp_path / "a.mrc", (16, 16, 16))
+    cfg = Config.load(env={}, overrides={"build": {"nice": 0}})
+    ds = Dataset.open(p, cfg)
+    q = AutoBuildQueue(cfg, popen=lambda *a, **k: DeadProc())
+    assert q.failure(ds.cache_dir) is None
+    ds.ensure_pyramid("auto", q)
+    deadline = time.time() + 5
+    while time.time() < deadline and q.pending(ds.cache_dir):
+        time.sleep(0.01)
+    assert q.failure(ds.cache_dir) == 137
+    st = ds.status(q)
+    assert st["levels"]["state"] == "failed" and "137" in st["levels"]["reason"]
+    q.shutdown()

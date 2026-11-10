@@ -38,6 +38,13 @@ class AutoBuildQueue:
         with self._lock:
             return cache_dir in self._pending or cache_dir in self._running
 
+    def failure(self, cache_dir: Path) -> int | None:
+        """Exit code of the last auto-build of this cache dir if it failed, else None.
+        0 built, 3 skipped (locked), 4 skipped (already valid) are not failures."""
+        with self._lock:
+            rc = self._done.get(cache_dir)
+        return rc if rc is not None and rc not in (0, 3, 4) else None
+
     def snapshot(self) -> dict:
         with self._lock:
             return {"pending": len(self._pending), "running": len(self._running),

@@ -272,11 +272,13 @@ Keys are served by zarr-http-server's `store_app` mounted per dataset (one app p
 
 `levels.state ∈ {native, indexing, queued, building, multiscale, failed, unservable}`. Viewers and Fileglancer read this to show the three-state badge and to decide whether to offer "Build multiscale".
 
+Only `indexing`, `queued` and `building` are transient; a client polls while it sees one of them and stops on anything else. The server therefore never reports a build that will not happen (over `auto_max_bytes`, auto-build off) as `queued`: that is `native` with the reason. An auto-build subprocess that exits non-zero without writing `build.json` is `failed` with its exit code, not `native`.
+
 ### 8.5 Auto-build
 
 ```
 build.auto = on | off               # default on for standalone, off under trusted-path mode unless Fileglancer enables it
-build.auto_max_bytes = 20 GiB       # above this, never automatic; status says "queued: run `zarrbridge build` or submit a job"
+build.auto_max_bytes = 20 GiB       # above this, never automatic; status stays `native` with reason "run `zarrbridge build` or submit a job"
 build.slots = 1                     # host-level concurrent builder subprocesses for this server
 build.nice = 10; build.ionice = idle
 ```

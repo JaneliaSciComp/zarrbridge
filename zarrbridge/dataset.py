@@ -153,12 +153,18 @@ class Dataset:
             return ("indexing" if bj is None else "building"), st
         if queue is not None and queue.pending(self.cache_dir):
             return "queued", {"reason": "auto-build queued"}
+        # Terminal states from here on: indexing/queued/building are the only
+        # ones a client should poll, so a build that will not happen or did
+        # not succeed must never be reported as one of them.
         if bj and bj.get("state") == "failed":
             return "failed", {"reason": bj.get("error")}
+        rc = queue.failure(self.cache_dir) if queue is not None else None
+        if rc is not None:
+            return "failed", {"reason": f"auto-build exited {rc} without writing a result"}
         reason = f"cache {self.validity}" + (f" ({self.mismatch} mismatch)" if self.mismatch else "")
         if self.config.build.auto and self.opened.identity.size > self.config.build.auto_max_bytes:
-            return "queued", {"reason": f"{reason}; file exceeds build.auto_max_bytes: run `zarrbridge build` or submit a job"}
-        if not self.config.build.auto:
+            reason += "; file exceeds build.auto_max_bytes: run `zarrbridge build` or submit a job"
+        elif not self.config.build.auto:
             reason += "; auto-build off: run `zarrbridge build`"
         return "native", {"reason": reason}
 
