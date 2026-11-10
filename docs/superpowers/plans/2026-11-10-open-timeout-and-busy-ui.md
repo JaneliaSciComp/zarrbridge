@@ -4,7 +4,7 @@
 
 **Goal:** zarrbridge gives up indexing a file after 60 s instead of working for an hour in the background, reports what it is doing while it works, says clearly when a file is too big to index automatically and that it must be indexed manually, and Fileglancer shows a working animation whenever zarrbridge is busy on the file being viewed.
 
-**Architecture:** The refkv zarrify is run as a cancellable coroutine with a deadline; a timeout raises a new `IndexTimeout`. The dataset resolver opens files on a background thread, dedupes concurrent opens, remembers timeouts for a short while, and lets `_status` answer without blocking, so the status endpoint reports `indexing` during the open and the new terminal state `unindexed` after a timeout. Fileglancer's `virtual_node` consults `_status` first and returns a pending root node, its catch-all stops turning transport errors into "plain file", and the frontend drives everything off `levels.state`: a spinner for the three transient states, warning copy for `unindexed`, and a listing refetch when the state leaves a transient value.
+**Architecture:** The refkv zarrify is run as a cancellable coroutine with a deadline that only the server passes (the builder and the `index` CLI stay unbounded); a timeout raises a new `IndexTimeout`, which the reader registry re-raises rather than falling through to the tifffile reader. Routes wait on the resolver through `asyncio.to_thread`, so the event loop keeps serving other files while one is opening. The dataset resolver opens files on a background thread, dedupes concurrent opens, remembers timeouts for a short while, and lets `_status` answer without blocking, so the status endpoint reports `indexing` during the open and the new terminal state `unindexed` after a timeout. Fileglancer's `virtual_node` consults `_status` first and returns a pending root node, its catch-all stops turning transport errors into "plain file", and the frontend drives everything off `levels.state`: a spinner for the three transient states, warning copy for `unindexed`, and a listing refetch when the state leaves a transient value.
 
 **Tech Stack:** zarrbridge (Python 3.12, Starlette, refkv 0.2.0, pytest via `pixi run -e test test`); fileglancer backend (FastAPI, httpx, pytest); fileglancer frontend (React 18, TanStack Query v5, Vitest + Testing Library via `pixi run test-frontend`).
 
@@ -26,6 +26,8 @@
 - A user who reloads the page during the 60 s window: no second zarrify of the same file may start. Pinned by Task 2's `test_concurrent_dataset_calls_open_once`.
 - A fast file (MRC, small TIFF) must not flash "indexing" on first visit: `_status` waits a short grace period for the open before answering pending. Pinned by Task 3's `test_status_of_fast_file_is_complete_on_first_request`.
 - A timeout followed by a manual `zarrbridge index`: the server must pick up the saved index after the retry window, not stay `unindexed` forever. Pinned by Task 2's `test_unindexed_is_retried_after_open_retry_s`.
+- A dataset opening for 60 s must not stall chunk requests for other files on the same dataserver. Pinned by Task 3's `test_pending_open_does_not_block_other_requests`.
+- `zarrbridge build` and `zarrbridge index` must run to completion on a file the server gave up on; they are the manual resolution. Pinned by Task 1's `test_timeout_is_opt_in`.
 - The `_status` key is reachable from inside the hierarchy (`image.tif/0/_status`) and the pending answer must be the same there. Pinned by Task 3's `test_status_pending_shape` which calls both forms.
 
 ---
@@ -36,14 +38,18 @@
 - Modify: `zarrbridge/_sync.py`
 - Modify: `zarrbridge/readers/base.py`
 - Modify: `zarrbridge/server/config.py:105-116` (`LimitsConfig`)
-- Modify: `zarrbridge/readers/refkv_reader.py:84-92` (`_zarrify`)
+- Modify: `zarrbridge/readers/refkv_reader.py:40-92` (`RefkvReader.open`, `_zarrify`)
+- Modify: `zarrbridge/readers/registry.py:36-66` (`open_dataset_reader`)
+- Modify: `zarrbridge/dataset.py:53` (the one `open_dataset_reader` call)
 - Test: `tests/test_refkv_reader.py`
 
 **Interfaces:**
 - Produces: `run_sync_with_timeout(coro: Awaitable[T], timeout: float | None) -> T` in `zarrbridge/_sync.py`; raises builtin `TimeoutError` after cancelling the coroutine's task on the background loop.
 - Produces: `class IndexTimeout(ReaderRejected)` in `zarrbridge/readers/base.py` with `__init__(self, path: Path, timeout_s: float)` and attribute `timeout_s`; its message is `f"indexing did not finish within {timeout_s:.0f} s, so this file is too big to index automatically. It needs to be indexed manually: run `zarrbridge index {path}`; the saved index makes later opens fast."`.
 - Produces: `LimitsConfig.open_timeout_s: float = 60.0`, `LimitsConfig.open_grace_s: float = 2.0`, `LimitsConfig.open_retry_s: float = 60.0`, `LimitsConfig.index_save_after_s: float = 5.0`. Zero disables each.
-- Produces: `_zarrify(path: Path, config) -> ReferenceStore` raising `IndexTimeout`.
+- Produces: `_zarrify(path: Path, config, timeout: float | None) -> ReferenceStore`; `None` means no deadline; raises `IndexTimeout` otherwise.
+- Produces: `RefkvReader.open(path, config, cache_dir=None, *, timeout: float | None = None)` and `open_dataset_reader(path, config, cache_dir=None, *, timeout: float | None = None)`, both threading `timeout` down to `_zarrify`. The default is unbounded, so `builder.build` (`builder.py:87`) and `cli._index` (`cli.py:206`) are untouched and keep running to completion. Only `Dataset.open` passes `config.limits.open_timeout_s or None`; `zarrbridge status` goes through `Dataset.open` and so prints the timeout reason for a file the server would give up on.
+- Produces: `open_dataset_reader` re-raises `IndexTimeout` from the refkv attempt instead of recording it and trying the tifffile reader; a timeout is final.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -63,13 +69,43 @@ def test_zarrify_timeout_cancels_and_raises(tmp_path, cfg, monkeypatch):
             raise
 
     monkeypatch.setattr(refkv.zarrify, "zarrify_async", slow)
-    cfg.limits.open_timeout_s = 0.2
     t0 = time.time()
     with pytest.raises(IndexTimeout, match="too big to index automatically"):
-        _zarrify(tmp_path / "x.czi", cfg)
+        _zarrify(tmp_path / "x.czi", cfg, timeout=0.2)
     assert time.time() - t0 < 2
     time.sleep(0.1)
     assert state["cancelled"]
+
+
+def test_timeout_is_opt_in(tmp_path, cfg, monkeypatch):
+    # The builder and `zarrbridge index` never pass a timeout: they are the manual resolution.
+    import time
+    import zarrbridge.readers.refkv_reader as rr
+    from zarrbridge.build.builder import build, BUILT
+    real = rr._zarrify
+
+    def slow(path, config, timeout):
+        assert timeout is None
+        time.sleep(0.3)
+        return real(path, config, timeout)
+    monkeypatch.setattr(rr, "_zarrify", slow)
+    cfg.limits.open_timeout_s = 0.05
+    cfg.build.min_axis = 4
+    p = make_tiff(tmp_path / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    assert build(p, cfg) == BUILT
+    assert RefkvReader().open(p, cfg).identity.extras["format"] == "tiff"
+
+
+def test_registry_does_not_swallow_timeout(tmp_path, cfg, monkeypatch):
+    import zarrbridge.readers.refkv_reader as rr
+    from zarrbridge.readers.base import IndexTimeout
+    monkeypatch.setattr(rr, "_zarrify", lambda path, config, timeout: (_ for _ in ()).throw(IndexTimeout(path, 60)))
+    p = make_tiff(tmp_path / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    with pytest.raises(IndexTimeout):
+        open_dataset_reader(p, cfg, timeout=60)
+    # no timeout requested: not even attempted, the real zarrify runs
+    monkeypatch.undo()
+    assert open_dataset_reader(p, cfg).reader_name == "refkv"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -77,25 +113,32 @@ def test_zarrify_timeout_cancels_and_raises(tmp_path, cfg, monkeypatch):
 Run: `pixi run -e test test tests/test_refkv_reader.py::test_zarrify_timeout_cancels_and_raises`
 Expected: FAIL with `ImportError: cannot import name 'IndexTimeout'`
 
+Run: `pixi run -e test test tests/test_refkv_reader.py::test_timeout_is_opt_in tests/test_refkv_reader.py::test_registry_does_not_swallow_timeout`
+Expected: FAIL with `TypeError` (unexpected keyword `timeout`)
+
 - [ ] **Step 3: Implement `run_sync_with_timeout` in `zarrbridge/_sync.py`**
 
 Schedule with `asyncio.run_coroutine_threadsafe(coro, _bg_loop())`, call `.result(timeout)`; on `concurrent.futures.TimeoutError` call `fut.cancel()` and raise `TimeoutError`. Always use the background loop, even when no loop runs in the caller's thread, so cancellation has a loop to run on.
 
 - [ ] **Step 4: Add `IndexTimeout` to `readers/base.py` and the four limits to `LimitsConfig`**
 
-- [ ] **Step 5: Rewrite `_zarrify` to use `refkv.zarrify.zarrify_async` through `run_sync_with_timeout`**
+- [ ] **Step 5: Rewrite `_zarrify(path, config, timeout)` to use `refkv.zarrify.zarrify_async` through `run_sync_with_timeout`**
 
-Timeout is `config.limits.open_timeout_s or None`. Translate `TimeoutError` into `IndexTimeout(path, timeout_s)`. Import `zarrify_async` from the module at call time (`refkv.zarrify.zarrify_async`) so the test's monkeypatch is seen.
+Translate `TimeoutError` into `IndexTimeout(path, timeout)`. Import `zarrify_async` from the module at call time (`refkv.zarrify.zarrify_async`) so the test's monkeypatch is seen. Thread the keyword through `RefkvReader.open` and `open_dataset_reader`, defaulting to `None`.
 
-- [ ] **Step 6: Run the reader tests**
+- [ ] **Step 6: In `open_dataset_reader`, re-raise `IndexTimeout` inside the TIFF reader loop before the `except ReaderRejected` branch records it**
 
-Run: `pixi run -e test test tests/test_refkv_reader.py`
+- [ ] **Step 7: In `Dataset.open`, pass `timeout=config.limits.open_timeout_s or None`**
+
+- [ ] **Step 8: Run the reader, builder and dataset tests**
+
+Run: `pixi run -e test test tests/test_refkv_reader.py tests/test_builder.py tests/test_dataset.py tests/test_cli.py`
 Expected: all PASS
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add zarrbridge/_sync.py zarrbridge/readers/base.py zarrbridge/server/config.py zarrbridge/readers/refkv_reader.py tests/test_refkv_reader.py
+git add zarrbridge/_sync.py zarrbridge/readers/base.py zarrbridge/server/config.py zarrbridge/readers/refkv_reader.py zarrbridge/readers/registry.py zarrbridge/dataset.py tests/test_refkv_reader.py
 git commit -m "feat: give up zarrifying after limits.open_timeout_s"
 ```
 
@@ -110,7 +153,7 @@ git commit -m "feat: give up zarrifying after limits.open_timeout_s"
 **Interfaces:**
 - Consumes: `IndexTimeout`, `LimitsConfig.open_timeout_s`, `open_retry_s` from Task 1.
 - Produces: `class StillOpening(Exception)` with attributes `started_at: float` (epoch seconds).
-- Produces: `DatasetResolver.dataset(path: Path, wait: float | None = None) -> Dataset`. Starts an open if none is in flight, joins the in-flight one otherwise, waits up to `wait` seconds (None: until the open ends, which the Task 1 deadline bounds), then returns the dataset, or raises `StillOpening`, `IndexTimeout`, or `ReaderRejected`.
+- Produces: `DatasetResolver.dataset(path: Path, wait: float | None = None) -> Dataset`, a blocking call that routes run through `asyncio.to_thread` (Task 3). Starts an open if none is in flight, joins the in-flight one otherwise, waits up to `wait` seconds (None: until the open ends, which the Task 1 deadline bounds), then returns the dataset, or raises `StillOpening`, `IndexTimeout`, or `ReaderRejected`.
 - Produces: `DatasetResolver.cached(path: Path) -> Dataset | None` (LRU lookup, no open, no source check).
 - Produces: `DatasetResolver.open_state(path: Path) -> tuple[str, dict] | None`: `("indexing", {"started_at": float})` while an open is in flight; `("unindexed", {"reason": str})` for `open_retry_s` after an `IndexTimeout`; `("unservable", {"reason": str})` for the existing 30 s after a `ReaderRejected`; else None.
 - Keeps: `open_count`, `close_idle`, `root_dir`, `split`, `check_trusted` unchanged. `ensure_pyramid("auto", queue)` still runs once per successful open.
@@ -220,7 +263,7 @@ git commit -m "feat: open datasets in the background, once per path, and remembe
 - Test: `tests/test_server.py`
 
 **Interfaces:**
-- Consumes: `resolver.dataset(path, wait=config.limits.open_grace_s)`, `resolver.open_state(path)`, `StillOpening`, `IndexTimeout` from Tasks 1 and 2.
+- Consumes: `resolver.dataset(path, wait=...)`, `resolver.open_state(path)`, `StillOpening`, `IndexTimeout` from Tasks 1 and 2. Both routes are `async def`, so every `resolver.dataset` call is `await asyncio.to_thread(resolver.dataset, path, wait)`; the event loop must never wait on an open.
 - Produces: the pending status JSON, status 200: `{"path": str, "reader": None, "reader_reason": None, "classification": "pending", "images": [], "levels": {"state": "indexing", "built": 0, "planned": None, "progress": 0.0, "eta_s": None, "reason": "reading the file's structure; gives up after {open_timeout_s:.0f} s", "elapsed_s": float}, "cache": {"mode": str, "dir": str, "bytes": 0, "fingerprint": "missing", "mismatch": None, "writable": bool}, "advice": []}`.
 - Produces: the unindexed status JSON, status 200: same shape with `"classification": "unindexed"`, `"levels": {"state": "unindexed", "built": 0, "planned": None, "progress": 0.0, "eta_s": None, "reason": <IndexTimeout message>}`.
 - Produces: `key_handler` answers `422` with body `unindexed: <message>` for a timed-out file, as it does `unservable: ...` today.
@@ -272,24 +315,40 @@ def test_open_timeout_is_unindexed(tmp_path, monkeypatch):
     assert "too big to index automatically" in s["levels"]["reason"] and "indexed manually" in s["levels"]["reason"]
     r = c.get("/data/a.ome.tif/zarr.json")
     assert r.status_code == 422 and r.text.startswith("unindexed:")
+
+
+def test_pending_open_does_not_block_other_requests(tmp_path, monkeypatch):
+    make_tiff(tmp_path / "data" / "a.ome.tif", stack_u16(), ome=True, metadata={"axes": "ZYX"}, tile=(32, 32))
+    make_mrc(tmp_path / "data" / "b.mrc", (16, 16, 16))
+    _slow_zarrify(monkeypatch, 1.5)
+    c = TestClient(create_app(cfg_root("data", tmp_path / "data")))
+    done = []
+    t = threading.Thread(target=lambda: done.append(c.get("/data/a.ome.tif/zarr.json").status_code))
+    t.start()
+    time.sleep(0.2)                       # the key request is now waiting on the open
+    t0 = time.time()
+    assert c.get("/data/b.mrc/zarr.json").status_code == 200 and c.get("/_health").status_code == 200
+    assert time.time() - t0 < 0.5         # served while a.ome.tif was still opening
+    t.join()
+    assert done == [200]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pixi run -e test test tests/test_server.py -k "pending_shape or fast_file or unindexed"`
-Expected: FAIL (`pending_shape` blocks and asserts on elapsed time; `unindexed` gets `unservable`)
+Run: `pixi run -e test test tests/test_server.py -k "pending_shape or fast_file or unindexed or does_not_block"`
+Expected: FAIL (`pending_shape` blocks and asserts on elapsed time; `unindexed` gets `unservable`; `does_not_block` exceeds 0.5 s because the loop is held by the open)
 
 - [ ] **Step 3: Rewrite the `status` route**
 
-Call `resolver.dataset(path, wait=config.limits.open_grace_s)`. On `StillOpening` build the pending JSON (`elapsed_s = time.time() - e.started_at`, cache fields from `cache_dir_for(path, config)` and `cache_writable`). On `IndexTimeout` build the unindexed JSON. Keep the `ReaderRejected` branch as it is. Note `IndexTimeout` is a `ReaderRejected`, so catch it first.
+Call `await asyncio.to_thread(resolver.dataset, path, config.limits.open_grace_s)`. On `StillOpening` build the pending JSON (`elapsed_s = time.time() - e.started_at`, cache fields from `cache_dir_for(path, config)` and `cache_writable`). On `IndexTimeout` build the unindexed JSON. Keep the `ReaderRejected` branch as it is. Note `IndexTimeout` is a `ReaderRejected`, so catch it first.
 
 - [ ] **Step 4: Update `key_handler`**
 
-`resolver.dataset(path)` with no wait; catch `IndexTimeout` before `ReaderRejected` and return `PlainTextResponse(f"unindexed: {e}", status_code=422)`.
+`await asyncio.to_thread(resolver.dataset, path)` with no wait (the Task 1 deadline bounds it); catch `IndexTimeout` before `ReaderRejected` and return `PlainTextResponse(f"unindexed: {e}", status_code=422)`.
 
 - [ ] **Step 5: Update the spec**
 
-§8.4: add `unindexed` to the state set with one sentence: "`unindexed` is terminal: the open hit `limits.open_timeout_s`; the file is too big to index automatically and must be indexed manually with `zarrbridge index`, after which the saved index makes the next open fast." Add: "`_status` never blocks for longer than `limits.open_grace_s`; while a dataset is being opened it reports `indexing` with `elapsed_s`." §8.6: add `limits.open_timeout_s` (60 s; the zarrify is cancelled, no work continues), `open_grace_s` (2 s), `open_retry_s` (60 s; a timed-out file is not reopened sooner), `index_save_after_s` (5 s; see Task 4).
+§8.4: add `unindexed` to the state set with one sentence: "`unindexed` is terminal: the open hit `limits.open_timeout_s`; the file is too big to index automatically and must be indexed manually with `zarrbridge index`, after which the saved index makes the next open fast." Add: "`_status` never blocks for longer than `limits.open_grace_s`; while a dataset is being opened it reports `indexing` with `elapsed_s`. Opens run on worker threads; the request loop is never held by one." Also: "`limits.open_timeout_s` applies to the server only. `zarrbridge build` and `zarrbridge index` have no deadline: they are how a file the server gave up on gets indexed." §8.6: add `limits.open_timeout_s` (60 s; the zarrify is cancelled, no work continues), `open_grace_s` (2 s), `open_retry_s` (60 s; a timed-out file is not reopened sooner), `index_save_after_s` (5 s; see Task 4).
 
 - [ ] **Step 6: Run the whole suite**
 
