@@ -31,7 +31,17 @@ def _zstd() -> zstandard.ZstdCompressor:
 
 
 def codec_names(array_meta: dict) -> list[str]:
-    return [c["name"] if isinstance(c, dict) else str(c) for c in array_meta.get("codecs", [])]
+    """Every codec name in the chain, including those inside a sharding codec's inner and index chains."""
+    names: list[str] = []
+    for c in array_meta.get("codecs", []):
+        if not isinstance(c, dict):
+            names.append(str(c))
+            continue
+        names.append(c["name"])
+        if c["name"] == "sharding_indexed":
+            conf = c.get("configuration") or {}
+            names += codec_names({"codecs": conf.get("codecs", [])}) + codec_names({"codecs": conf.get("index_codecs", [])})
+    return names
 
 
 DTYPE_MAP: dict[str, str] = {"float64": "float32", "float16": "float32"}

@@ -38,6 +38,32 @@ def cache_dir_for(path: Path, config: Any, mode: str | None = None) -> tuple[Pat
     raise ValueError(f"unknown cache.mode {mode!r}")
 
 
+def make_cache_dir(cache_dir: Path) -> None:
+    """mkdir -p. A `.zarrbridge` directory this creates gets setgid and group write (02775) so every cache
+    under it, whoever builds it, keeps the data directory's group and stays rebuildable by the lab."""
+    cache_dir = Path(cache_dir)
+    root = cache_dir.parent
+    if root.name == BESIDE_DIR and not root.exists():
+        root.parent.mkdir(parents=True, exist_ok=True)
+        root.mkdir(exist_ok=True)
+        try:
+            os.chmod(root, 0o2775)
+        except OSError:  # not ours after all (lost a race), or a filesystem without setgid
+            pass
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+
+def cache_writable(cache_dir: Path) -> bool:
+    """Whether this process can write the cache: the directory, or the nearest existing parent when it does not
+    exist yet. False for a `beside` cache another user built with a strict umask."""
+    d = Path(cache_dir)
+    while not d.exists():
+        if d.parent == d:
+            return False
+        d = d.parent
+    return os.access(d, os.W_OK)
+
+
 def info_key(image_path: str) -> str:
     return f"{image_path}/{INFO}" if image_path else INFO
 

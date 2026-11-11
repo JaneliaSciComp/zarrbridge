@@ -12,7 +12,8 @@ import refkv.ir
 import refkv.zarr as rzarr  # registers refkv codecs with zarr
 
 from zarrbridge._sync import run_sync
-from zarrbridge.readers.base import (Classification, ImageInfo, Opened, ReaderRejected, SourceIdentity,
+from zarrbridge.cache.layout import make_cache_dir
+from zarrbridge.readers.base import (Classification, ImageInfo, IndexTimeout, Opened, ReaderRejected, SourceIdentity,
                                      classify_chunks)
 from zarrbridge.store.codecs import ALLOWLIST, codec_names, needs_transcode
 
@@ -36,7 +37,7 @@ class RefkvReader:
         except Exception:
             return False
 
-    def open(self, path: Path, config: Any, cache_dir: Path | None = None) -> Opened:
+    def open(self, path: Path, config: Any, cache_dir: Path | None = None, *, timeout: float | None = None) -> Opened:
         """`cache_dir` holds the saved index (`save_index`); any binding it was written with is read back."""
         path = Path(path).resolve()
         st = os.stat(path)
@@ -48,7 +49,10 @@ class RefkvReader:
                 and side.get("header_hash") == hh and side.get("refkv_version") == refkv.__version__ \
                 and side.get("path") == str(path) and (cache_dir / side.get("file", "")).is_file():
             try:
-                rs = refkv.open(str(cache_dir / side["file"]), binding=side.get("binding", "vzip"))
+                # A saved index may read exactly the file it was written for (refkv >= 0.2.1 refuses
+                # local reads from an archive without a policy).
+                rs = refkv.open(str(cache_dir / side["file"]), binding=side.get("binding", "vzip"),
+                                policy=refkv.Policy(prefixes=(path.as_uri(),)))
                 reason = f"index {side['file']}"
                 pins = side.get("pins", [])
                 fmt = side.get("format")
@@ -56,7 +60,7 @@ class RefkvReader:
                 rs = None
         if rs is None:
             try:
-                rs = _zarrify(path, config)
+                rs = _zarrify(path, config, timeout)
             except (refkv.zarrify.Rejected, NotImplementedError, ValueError) as e:
                 raise ReaderRejected(f"refkv rejected: {e}") from e
             pins = [{"url": s.url, "size": s.size, "etag": s.etag, "modified_not_after": s.modified_not_after}
@@ -84,9 +88,15 @@ class RefkvReader:
         return op
 
 
-def _zarrify(path: Path, config: Any):
-    from refkv.zarrify import zarrify
-    return zarrify(str(path), connections=config.readers.refkv.connections)
+def _zarrify(path: Path, config: Any, timeout: float | None):
+    """refkv's zarrify, given up (cancelled) after `timeout` seconds; None means no deadline."""
+    import refkv.zarrify
+    from zarrbridge._sync import run_sync_with_timeout
+    coro = refkv.zarrify.zarrify_async(str(path), connections=config.readers.refkv.connections)
+    try:
+        return run_sync_with_timeout(coro, timeout)
+    except TimeoutError:
+        raise IndexTimeout(path, timeout) from None
 
 
 def _read_sidecar(cache_dir: Path) -> dict | None:
@@ -110,7 +120,7 @@ def save_index(opened: Opened, cache_dir: Path, binding: str = "vzip") -> Path:
     save = getattr(rs, f"save_{binding}", rs.save if binding == "vzip" else None)
     if save is None:
         raise ValueError(f"refkv {refkv.__version__} cannot write a {binding!r} index; bindings: {', '.join(refkv.BINDINGS)}")
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    make_cache_dir(cache_dir)
     index_path = cache_dir / f"index.{binding}"
     tmp = cache_dir / f"index.{binding}.tmp"
     save(str(tmp))

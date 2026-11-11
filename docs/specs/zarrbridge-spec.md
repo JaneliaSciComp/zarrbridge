@@ -132,7 +132,7 @@ Readers never write. Readers must be safe to open many times in one process (an 
 
 ### 5.4 `refkv` reader
 
-- `store = refkv.zarrify(path, policy=..., connections=...)` → `ReferenceStore`; `opened.store = refkv.zarr.store(store)`. Index persisted with `store.save_vzip(cache/index.vzip)` and reopened with `refkv.open(...)` when the fingerprint validates; pins from the store are copied into `identity.extras["pins"]` and re-verified against `stat` on open.
+- `store = refkv.zarrify(path, policy=..., connections=...)` → `ReferenceStore`; `opened.store = refkv.zarr.store(store)`. Index persisted with `store.save_vzip(cache/index.vzip)` and reopened with `refkv.open(..., policy=refkv.Policy(prefixes=(path.as_uri(),)))` when the fingerprint validates (an archive may read only the file it was written for; refkv ≥ 0.2.1 refuses local reads without a policy); pins from the store are copied into `identity.extras["pins"]` and re-verified against `stat` on open.
 - Covers CZI, ND2, LIF, NDPI, SVS, QPTIFF, IMS, DICOM, NIfTI, NRRD, FITS, OME-TIFF and TIFF that refkv accepts. refkv's own OME-Zarr 0.5 conventions (axes, units, scale/translation, `omero`, source metadata mirrors, multi-image hierarchies) are used as emitted; zarrbridge adds nothing to level-0 metadata.
 - Chunk values are references; zarr-python resolves them through the refkv store with refkv's `max_reads`/`max_concurrency` policy. Custom codecs refkv registers (`refkv.tiff_lzw`, `refkv.stream`, `packbits`, imagecodecs) are available to the transcode layer in-process; they are never exposed to clients (§6.2).
 - Dependency pinning: refkv is pre-1.0 and its spec changes weekly. Pin an exact version (git tag or commit) in `pyproject.toml`; record `refkv.__version__` in the fingerprint; CI runs against the pin only. The surface used is deliberately small: `zarrify`, `ReferenceStore.save_vzip`, `refkv.open`, `refkv.zarr.store`, pins, and `refkv.compose.{mount,overlay}` (optional, §6.3).
@@ -160,7 +160,7 @@ The `Opened.store` from the reader. For `mrc` and `tiff` it is a custom `Store` 
 
 ### 6.2 `TranscodeStore` (codec policy)
 
-- Allowlist of client-decodable codecs: `bytes`, `gzip`, `zstd`, `blosc`, `crc32c`, `transpose`, `sharding_indexed`. Configurable.
+- Allowlist of client-decodable codecs: `bytes`, `gzip`, `zstd`, `blosc`, `crc32c`, `transpose`, `sharding_indexed`. Configurable. The check descends into a `sharding_indexed` codec's inner and index chains, since refkv wraps TIFF strips in shards and the codec a viewer cannot decode sits inside.
 - For any array whose codec chain contains a codec outside the allowlist, this layer rewrites the array `zarr.json` to `[bytes(endian=little), zstd(level=3)]` (configurable) and, on chunk `get`, decodes through zarr-python's codec pipeline for the original chain and re-encodes. Arrays already on the allowlist pass through byte-for-byte (a refkv reference to a raw or gzip strip is sent as stored).
 - Decode concurrency is bounded per process (`limits.max_decodes`, default `os.cpu_count()`); excess requests wait.
 
@@ -185,7 +185,7 @@ cache.mode = beside | central         # default: beside if the file's directory 
 cache.central_root = ~/.cache/zarrbridge/pyramids   # or an operator path
 ```
 
-`beside`: `<dir>/.zarrbridge/<filename>/`. Permissions follow the data; a pyramid one lab member builds is readable by anyone who can read the file. `central`: `<central_root>/<sha256(abs_path)[:2]>/<sha256(abs_path)>/`, with the absolute path recorded inside for `prune` and `status`.
+`beside`: `<dir>/.zarrbridge/<filename>/`. Permissions follow the data; a pyramid one lab member builds is readable by anyone who can read the file. The builder runs with umask 002 and gives a `.zarrbridge` directory it creates setgid + group write (02775), so caches keep the data directory's group and any group member can lock, rebuild and prune them. An existing beside cache this user cannot write is still served, but never enqueued for auto-build: status reports `native` with the reason and `cache.writable: false`. `central`: `<central_root>/<sha256(abs_path)[:2]>/<sha256(abs_path)>/`, with the absolute path recorded inside for `prune` and `status`.
 
 ### 7.2 Layout
 
@@ -270,13 +270,17 @@ Keys are served by zarr-http-server's `store_app` mounted per dataset (one app p
 }
 ```
 
-`levels.state ∈ {native, indexing, queued, building, multiscale, failed, unservable}`. Viewers and Fileglancer read this to show the three-state badge and to decide whether to offer "Build multiscale".
+Two blocks say the same thing the way a UI shows it, one line each, so a client need not decode `levels`: `index` (`state ∈ {reading, saved, unsaved, none, failed}`, `bytes`, `reason`): the refkv index, `saved` beside the cache so opens are fast, `unsaved` when the file was zarrified in memory, `none` for readers that read headers directly, `failed` with the reason (timeout, rejection); and `pyramid` (`state ∈ {queued, building, built, failed, not_built}`, `reason`, `progress`, `eta_s`, `built`, `planned`, `levels`, `bytes`): the multiscale cache. Every `reason` is one or two plain sentences with no semicolons, shown verbatim.
+
+`levels.state ∈ {native, indexing, queued, building, multiscale, failed, unservable, unindexed}`. Viewers and Fileglancer read this to show the three-state badge and to decide whether to offer "Build multiscale". `unindexed` is terminal: the open hit `limits.open_timeout_s`; the file is too big to index automatically and must be indexed manually with `zarrbridge index`, after which the saved index makes the next open fast. `_status` never blocks for longer than `limits.open_grace_s`; while a dataset is being opened it reports `indexing` with `elapsed_s` (and `classification: pending`). Opens run on worker threads; requests waiting for one hold neither the loop nor a thread. `limits.open_timeout_s` applies to the server only. `zarrbridge build` and `zarrbridge index` have no deadline: they are how a file the server gave up on gets indexed.
+
+Only `indexing`, `queued` and `building` are transient; a client polls while it sees one of them and stops on anything else. The server therefore never reports a build that will not happen (over `auto_max_bytes`, auto-build off) as `queued`: that is `native` with the reason. An auto-build subprocess that exits non-zero without writing `build.json` is `failed` with its exit code, not `native`.
 
 ### 8.5 Auto-build
 
 ```
 build.auto = on | off               # default on for standalone, off under trusted-path mode unless Fileglancer enables it
-build.auto_max_bytes = 20 GiB       # above this, never automatic; status says "queued: run `zarrbridge build` or submit a job"
+build.auto_max_bytes = 20 GiB       # above this, never automatic; status stays `native` with reason "run `zarrbridge build` or submit a job"
 build.slots = 1                     # host-level concurrent builder subprocesses for this server
 build.nice = 10; build.ionice = idle
 ```
@@ -285,7 +289,7 @@ On first open of a dataset whose cache is `missing|stale|outdated|incompatible` 
 
 ### 8.6 Limits
 
-`limits.max_open_datasets`, `limits.chunk_cache_bytes` (small LRU of encoded chunks, default 256 MiB), `limits.max_decodes`, `limits.max_reads_per_chunk` (refuse chunks whose plan exceeds it; pairs with classification), `limits.max_chunk_bytes` (chunks above it make the dataset `unservable` unless uncompressed, default 64 MiB).
+`limits.max_open_datasets`, `limits.chunk_cache_bytes` (small LRU of encoded chunks, default 256 MiB), `limits.max_decodes`, `limits.max_reads_per_chunk` (refuse chunks whose plan exceeds it; pairs with classification), `limits.max_chunk_bytes` (chunks above it make the dataset `unservable` unless uncompressed, default 64 MiB), `limits.open_timeout_s` (60 s; the read walk is cancelled: at most `readers.refkv.connections` in-flight reads finish, and a projection already running completes; process isolation would make the stop absolute and is not worth a subprocess per open), `limits.open_grace_s` (2 s; how long `_status` waits for an in-flight open before answering `indexing`), `limits.open_retry_s` (60 s; a timed-out file is not reopened sooner), `limits.index_save_after_s` (5 s; a server-side zarrify slower than this saves its refkv index beside the cache so the next open is fast).
 
 ### 8.7 Logging
 

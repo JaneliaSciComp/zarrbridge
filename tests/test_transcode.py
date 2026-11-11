@@ -56,3 +56,23 @@ def test_numcodecs_zlib_is_transcoded():
     meta = {"node_type": "array", "data_type": "uint8",
             "codecs": [{"name": "bytes"}, {"name": "numcodecs.zlib", "configuration": {"level": 6}}]}
     assert needs_transcode(meta)
+
+
+async def test_codec_inside_a_shard_is_transcoded(tmp_path):
+    # refkv 0.2.1 wraps TIFF strips in sharding_indexed, so the codec a viewer cannot decode sits
+    # inside the shard's inner chain, not at the top level.
+    from zarr.codecs.numcodecs import Zlib
+    from zarr.storage import MemoryStore
+    from zarrbridge.store.codecs import needs_transcode
+    a = stack_u16((3, 64, 120))
+    store = MemoryStore()
+    arr = zarr.create_group(store).create_array("0", shape=a.shape, dtype=a.dtype, chunks=(1, 8, 120),
+                                                shards=(1, 64, 120), compressors=Zlib(level=1))
+    arr[:] = a
+    raw = json.loads((await store.get("0/zarr.json", proto)).to_bytes())
+    assert raw["codecs"][0]["name"] == "sharding_indexed" and needs_transcode(raw)
+    ts = TranscodeStore(store)
+    meta = json.loads((await ts.get("0/zarr.json", proto)).to_bytes())
+    assert [c["name"] for c in meta["codecs"]] == ["bytes", "zstd"]
+    assert meta["chunk_grid"]["configuration"]["chunk_shape"] == [1, 64, 120]
+    assert np.array_equal(zarr.open_group(ts, mode="r")["0"][:], a)

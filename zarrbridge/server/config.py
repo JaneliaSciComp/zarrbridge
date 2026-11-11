@@ -15,6 +15,19 @@ _UNITS = {"": 1, "b": 1, "k": 10**3, "m": 10**6, "g": 10**9, "t": 10**12,
           "kib": 2**10, "mib": 2**20, "gib": 2**30, "tib": 2**40}
 
 
+def human_bytes(n: int | float) -> str:
+    """`n` bytes in the largest binary unit that keeps it above 1: 20 GiB, 1.5 MiB, 512 B."""
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    i = 0
+    while abs(n) >= 1024 and i < len(units) - 1:
+        n /= 1024
+        i += 1
+    if i == 0:
+        return f"{int(n)} B"
+    text = f"{n:.1f}".rstrip("0").rstrip(".")
+    return f"{text} {units[i]}"
+
+
 def parse_bytes(s: str | int) -> int:
     if isinstance(s, int):
         return s
@@ -111,6 +124,10 @@ class LimitsConfig:
     max_decodes: int = 0  # 0 -> os.cpu_count()
     max_reads_per_chunk: int = 256
     max_chunk_bytes: int = 64 * 2**20
+    open_timeout_s: float = 60.0  # server-side open deadline (refkv indexing); 0 = none. build/index never time out
+    open_grace_s: float = 2.0  # how long _status waits for an in-flight open before answering `indexing`
+    open_retry_s: float = 60.0  # a timed-out file is not reopened sooner than this
+    index_save_after_s: float = 5.0  # a server-side zarrify slower than this saves its refkv index
 
 
 _BYTE_FIELDS = {("build", "auto_max_bytes"), ("limits", "chunk_cache_bytes"), ("limits", "max_chunk_bytes")}
